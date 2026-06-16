@@ -1,7 +1,9 @@
 // =============================================================================
-//  QRCE-Lite  V1  —  Indicador Compuesto de Tendencia Real
+//  QRCE-Lite  V1.1  —  Indicador Compuesto de Tendencia Real
 //  Quantum Regime Confluence Engine (versión ligera, robusta y compilable)
 //  Pine Script v6  ·  overlay=true
+//  V1.1: flecha grande solo en señal fuerte confirmada; etiquetas débiles;
+//        tabla con OPERAR SÍ/NO + motivo; Gate cerrada muy visible.
 // =============================================================================
 //
 //  QUÉ ES
@@ -13,37 +15,30 @@
 //      · Bajista débil / Bajista fuerte
 //      · Agotamiento / Reversión probable  (override por tensión estadística)
 //
-//  Está basado en los dos documentos de diseño (ICT-R y QRCE). De QRCE se
-//  implementa el núcleo viable en Pine v6 (KER, KAMA/DEMA adaptativa, SuperTrend
-//  adaptativa, TQI, Kurtosis, RSI Boosting, BOS/CHoCH, MTF no repintable).
-//
 //  CÓMO SE USA  (resumen — detalle al final del archivo)
 //  -----------
-//  1. Trabaja en tu TF de operación (p.ej. 15m–1H) y deja el HTF de confirmación
-//     coherente (p.ej. 4H/D1). Configúralo en el grupo "Multi-Timeframe (HTF)".
-//  2. Opera SOLO con la puerta de volatilidad ABIERTA (Gate = Open).
-//  3. Entradas: triángulo verde (compra fuerte) / rojo (venta fuerte). Son
-//     transiciones confirmadas al CIERRE de vela (no repintan).
-//  4. "X" gris = ruptura NO confirmada (posible barrido de liquidez) → ignorar.
-//  5. Lee la tabla: Score, Estado, HTF, Gate y Agotamiento de un vistazo.
+//  1. Trabaja en tu TF de operación (p.ej. 15m–1H) con el HTF coherente (4H/D1).
+//  2. Opera SOLO cuando la tabla muestre "OPERAR: SÍ". Si dice NO, la tabla
+//     muestra el motivo (Gate cerrada / ADX bajo / HTF contrario / Score insuficiente).
+//  3. Flecha grande verde/roja = entrada fuerte confirmada al CIERRE de vela.
+//  4. Etiqueta "Alcista débil" / "Bajista débil" = tendencia iniciada sin fuerza
+//     suficiente para entrada agresiva. Sin flecha.
+//  5. "X" gris = ruptura NO confirmada (posible barrido de liquidez) → ignorar.
 //
 //  NO REPINTADO
 //  ------------
 //  · Toda la lógica usa valores de cierre y pivotes confirmados.
-//  · El HTF se solicita con el patrón canónico no repintable:
-//        request.security(..., serie[1], lookahead = barmerge.lookahead_on)
-//  · Las señales de entrada y las alertas se emiten con barstate.isconfirmed.
+//  · HTF: request.security(..., serie[1], lookahead = barmerge.lookahead_on)
+//  · Señales y alertas solo con barstate.isconfirmed.
 //
 //  FOOTPRINT / ORDER FLOW
 //  ----------------------
-//  request.footprint() es dato premium tick-by-tick y puede impedir la
-//  compilación / no estar disponible. Por eso V1 NO lo usa: el módulo de volumen
-//  funciona con fallback (Delta proxy, Volumen relativo, OBV o VWAP). El
-//  footprint real queda propuesto para V2 (ver final del archivo).
+//  V1.1 NO usa request.footprint(): módulo de volumen con fallback
+//  (Delta proxy, Volumen relativo, OBV o VWAP). Footprint real → V2.
 // =============================================================================
 
 //@version=6
-indicator("QRCE-Lite V1 — Compuesto de Tendencia", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 200)
+indicator("QRCE-Lite V1.1 — Compuesto de Tendencia", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 200)
 
 // =============================================================================
 //  INPUTS
@@ -54,16 +49,16 @@ i_kamaFast   = input.int(2,   "KAMA — periodo rápido",                  minva
 i_kamaSlow   = input.int(30,  "KAMA — periodo lento",                   minval = 2,  group = grpDir)
 i_atrLen     = input.int(10,  "Longitud ATR (SuperTrend)",              minval = 1,  group = grpDir)
 i_stMult     = input.float(3.0, "SuperTrend — multiplicador base",      minval = 0.5, step = 0.1, group = grpDir)
-i_stAdapt    = input.float(1.0, "SuperTrend — fuerza adaptativa por KER", minval = 0.0, step = 0.1, group = grpDir, tooltip = "Ensancha las bandas cuando KER es bajo (mercado ruidoso) para reducir whipsaw. mult = base*(1+(1-KER)*fuerza).")
+i_stAdapt    = input.float(1.0, "SuperTrend — fuerza adaptativa por KER", minval = 0.0, step = 0.1, group = grpDir, tooltip = "Ensancha las bandas cuando KER es bajo (mercado ruidoso) para reducir whipsaw.")
 
 grpGate  = "2 · Puerta de volatilidad / Filtro anti-rango"
 i_gateLen    = input.int(20,  "Longitud media de ATR (ratio volatilidad)", minval = 2, group = grpGate)
 i_volGate    = input.float(1.0, "Umbral ratio de volatilidad (Gate)",   minval = 0.1, step = 0.05, group = grpGate, tooltip = "Gate abierto si ATR/mediaATR ≥ umbral (expansión de volatilidad).")
-i_kerGate    = input.float(0.30, "Umbral mínimo de KER (Gate)",          minval = 0.0, maxval = 1.0, step = 0.01, group = grpGate, tooltip = "Si KER < umbral → fase de congestión → Gate cerrado.")
-i_useAdxGate = input.bool(true, "Usar ADX en el Gate",                   group = grpGate)
-i_adxLen     = input.int(14,  "ADX — longitud DI",                       minval = 1, group = grpGate)
-i_adxSmooth  = input.int(14,  "ADX — suavizado",                         minval = 1, group = grpGate)
-i_adxThresh  = input.float(20.0, "ADX — umbral de tendencia",            minval = 1, step = 1, group = grpGate)
+i_kerGate    = input.float(0.30, "Umbral mínimo de KER (Gate)",         minval = 0.0, maxval = 1.0, step = 0.01, group = grpGate, tooltip = "Si KER < umbral → fase de congestión → Gate cerrado.")
+i_useAdxGate = input.bool(true, "Usar ADX en el Gate",                  group = grpGate)
+i_adxLen     = input.int(14,  "ADX — longitud DI",                      minval = 1, group = grpGate)
+i_adxSmooth  = input.int(14,  "ADX — suavizado",                        minval = 1, group = grpGate)
+i_adxThresh  = input.float(20.0, "ADX — umbral de tendencia",           minval = 1, step = 1, group = grpGate)
 
 grpTqi   = "3 · TQI (Trend Quality Index)"
 i_tqiW1  = input.float(0.40, "Peso KER",                    minval = 0, maxval = 1, step = 0.05, group = grpTqi)
@@ -74,30 +69,30 @@ i_persistLen = input.int(10, "Persistencia de momentum — barras", minval = 2, 
 i_devLen     = input.int(50, "Desviación de estructura — barras", minval = 2, group = grpTqi)
 
 grpRsi   = "4 · RSI Boosted (momentum confirmado)"
-i_rsiLen     = input.int(14, "RSI — longitud",            minval = 1, group = grpRsi)
-i_rsiMid     = input.float(50, "RSI — línea media",        step = 1, group = grpRsi)
-i_rsiScale   = input.float(20, "RSI — escala de saturación",minval = 1, step = 1, group = grpRsi, tooltip = "Distancia desde 50 a la que el módulo RSI satura su puntuación.")
-i_osBoost    = input.float(34, "RSI Boost — sobreventa (+4)", step = 1, group = grpRsi)
-i_obBoost    = input.float(66, "RSI Boost — sobrecompra (-4)",step = 1, group = grpRsi)
+i_rsiLen     = input.int(14,   "RSI — longitud",              minval = 1, group = grpRsi)
+i_rsiMid     = input.float(50, "RSI — línea media",           step = 1,   group = grpRsi)
+i_rsiScale   = input.float(20, "RSI — escala de saturación",  minval = 1, step = 1, group = grpRsi, tooltip = "Distancia desde 50 a la que el módulo RSI satura su puntuación.")
+i_osBoost    = input.float(34, "RSI Boost — sobreventa (+4)", step = 1,   group = grpRsi)
+i_obBoost    = input.float(66, "RSI Boost — sobrecompra (-4)",step = 1,   group = grpRsi)
 
 grpStruct = "5 · Estructura (Pivotes / BOS / CHoCH)"
-i_pivLeft   = input.int(5, "Pivote — barras izquierda", minval = 1, group = grpStruct)
-i_pivRight  = input.int(5, "Pivote — barras derecha (confirmación)", minval = 1, group = grpStruct, tooltip = "Las barras a la derecha aseguran que el pivote esté confirmado: no repinta.")
+i_pivLeft   = input.int(5, "Pivote — barras izquierda",                minval = 1, group = grpStruct)
+i_pivRight  = input.int(5, "Pivote — barras derecha (confirmación)",   minval = 1, group = grpStruct, tooltip = "Las barras a la derecha aseguran que el pivote esté confirmado: no repinta.")
 
 grpVol   = "6 · Volumen / Order Flow (fallback — footprint en V2)"
-i_volMethod = input.string("Delta proxy", "Método de volumen", options = ["Delta proxy", "Volumen relativo", "OBV", "VWAP"], group = grpVol, tooltip = "V1 NO usa request.footprint() (dato premium). Fallback: Delta proxy (presión intrabar estimada), Volumen relativo, OBV o VWAP.")
-i_volLen    = input.int(20, "Volumen — longitud media", minval = 2, group = grpVol)
+i_volMethod = input.string("Delta proxy", "Método de volumen", options = ["Delta proxy", "Volumen relativo", "OBV", "VWAP"], group = grpVol, tooltip = "V1.1 NO usa request.footprint(). Fallback: Delta proxy, Volumen relativo, OBV o VWAP.")
+i_volLen    = input.int(20,  "Volumen — longitud media",    minval = 2,   group = grpVol)
 i_volThresh = input.float(1.0, "Volumen relativo — umbral", minval = 0.1, step = 0.05, group = grpVol)
 
 grpHtf   = "7 · Multi-Timeframe (HTF) no repintable"
-i_useHtf    = input.bool(true, "Activar confirmación HTF", group = grpHtf)
+i_useHtf    = input.bool(true,  "Activar confirmación HTF",             group = grpHtf)
 i_htf       = input.timeframe("240", "Temporalidad de confirmación (HTF)", group = grpHtf)
-i_htfEmaLen = input.int(50, "HTF — EMA de tendencia", minval = 2, group = grpHtf)
+i_htfEmaLen = input.int(50, "HTF — EMA de tendencia", minval = 2,       group = grpHtf)
 
 grpExh   = "8 · Agotamiento / Tensión (Kurtosis)"
-i_kurtLen    = input.int(21, "Kurtosis — ventana de retornos", minval = 4, group = grpExh)
-i_kurtThresh = input.float(4.5, "Kurtosis — umbral leptocúrtico", minval = 3.0, step = 0.1, group = grpExh, tooltip = "Kurtosis>3 = colas pesadas. Por encima del umbral, con tendencia madura, se marca agotamiento.")
-i_tqiExhaust = input.float(0.55, "TQI mínimo para agotamiento", minval = 0, maxval = 1, step = 0.05, group = grpExh)
+i_kurtLen    = input.int(21,   "Kurtosis — ventana de retornos",    minval = 4,   group = grpExh)
+i_kurtThresh = input.float(4.5,"Kurtosis — umbral leptocúrtico",    minval = 3.0, step = 0.1, group = grpExh, tooltip = "Kurtosis>3 = colas pesadas. Por encima del umbral, con tendencia madura, se marca agotamiento.")
+i_tqiExhaust = input.float(0.55,"TQI mínimo para agotamiento",      minval = 0,   maxval = 1, step = 0.05, group = grpExh)
 
 grpScore = "9 · Score y estados (umbrales)"
 i_strongBull = input.float(75, "Score — Alcista fuerte ≥", minval = 50, maxval = 100, step = 1, group = grpScore)
@@ -106,85 +101,76 @@ i_weakBear   = input.float(40, "Score — Bajista débil ≤",  minval = 0,  max
 i_strongBear = input.float(25, "Score — Bajista fuerte ≤", minval = 0,  maxval = 50,  step = 1, group = grpScore)
 
 grpViz   = "10 · Visual"
-i_showTable     = input.bool(true,  "Mostrar tabla",                 group = grpViz)
-i_showSignals   = input.bool(true,  "Mostrar triángulos de entrada", group = grpViz)
-i_showStruct    = input.bool(true,  "Mostrar BOS / CHoCH",           group = grpViz)
-i_showFakeouts  = input.bool(true,  "Mostrar falsas rupturas (X)",   group = grpViz)
-i_colorBars     = input.bool(false, "Colorear velas por estado",     group = grpViz)
-i_tablePos      = input.string("Arriba derecha", "Posición tabla", options = ["Arriba derecha", "Arriba izquierda", "Abajo derecha", "Abajo izquierda"], group = grpViz)
+i_showTable       = input.bool(true,  "Mostrar tabla",                       group = grpViz)
+i_showSignals     = input.bool(true,  "Mostrar flechas de entrada fuertes",  group = grpViz)
+i_showWeakLabels  = input.bool(true,  "Mostrar etiquetas tendencia débil",   group = grpViz)
+i_showStruct      = input.bool(true,  "Mostrar BOS / CHoCH",                 group = grpViz)
+i_showFakeouts    = input.bool(true,  "Mostrar falsas rupturas (X)",         group = grpViz)
+i_colorBars       = input.bool(false, "Colorear velas por estado",           group = grpViz)
+i_tablePos        = input.string("Arriba derecha", "Posición tabla", options = ["Arriba derecha", "Arriba izquierda", "Abajo derecha", "Abajo izquierda"], group = grpViz)
 
 // =============================================================================
 //  PALETA
 // =============================================================================
-colUp     = color.rgb(0, 200, 120)    // verde esmeralda — alcista fuerte
-colDn     = color.rgb(220, 40, 60)    // rojo carmín     — bajista fuerte
-colUpW    = color.new(colUp, 45)      // alcista débil
-colDnW    = color.new(colDn, 45)      // bajista débil
-colNeu    = color.new(color.gray, 20) // neutral / rango
-colExh    = color.rgb(255, 165, 0)    // naranja — agotamiento
+colUp   = color.rgb(0, 200, 120)     // verde esmeralda — alcista fuerte
+colDn   = color.rgb(220, 40, 60)     // rojo carmín     — bajista fuerte
+colUpW  = color.new(colUp, 45)       // alcista débil
+colDnW  = color.new(colDn, 45)       // bajista débil
+colNeu  = color.new(color.gray, 20)  // neutral / rango
+colExh  = color.rgb(255, 165, 0)     // naranja — agotamiento
 
 // =============================================================================
-//  MÓDULO 0 · KER (Kaufman Efficiency Ratio) — base de toda la adaptación
+//  MÓDULO 0 · KER (Kaufman Efficiency Ratio)
 // =============================================================================
-// KER = |cambio neto| / suma de |cambios barra a barra|.  Rango 0..1.
-chg        = math.abs(close - close[i_kerLen])
-vol        = math.sum(math.abs(close - close[1]), i_kerLen)
-ker        = nz(vol != 0 ? chg / vol : 0.0, 0.0)
+chg    = math.abs(close - close[i_kerLen])
+vol    = math.sum(math.abs(close - close[1]), i_kerLen)
+ker    = nz(vol != 0 ? chg / vol : 0.0, 0.0)
 
-// ATR efectivo: ATR modulado por KER (compresión del rango en ruido).
-atr        = ta.atr(i_atrLen)
-effAtr     = atr * (0.5 + 0.5 * ker)   // 0.5x..1.0x según linealidad — base del trailing-stop adaptativo
+atr    = ta.atr(i_atrLen)
+effAtr = atr * (0.5 + 0.5 * ker)
 plot(effAtr, "ATR efectivo", color = color.new(color.blue, 100), display = display.data_window)
 
 // =============================================================================
 //  MÓDULO 1 · DIRECCIÓN — KAMA adaptativa + SuperTrend adaptativa
 // =============================================================================
-// --- KAMA (media adaptativa de Kaufman, controlada por KER) ---
-fastSC     = 2.0 / (i_kamaFast + 1)
-slowSC     = 2.0 / (i_kamaSlow + 1)
-sc         = math.pow(ker * (fastSC - slowSC) + slowSC, 2)
+fastSC = 2.0 / (i_kamaFast + 1)
+slowSC = 2.0 / (i_kamaSlow + 1)
+sc     = math.pow(ker * (fastSC - slowSC) + slowSC, 2)
 var float kama = na
-kama := na(kama[1]) ? close : kama[1] + sc * (close - kama[1])
+kama  := na(kama[1]) ? close : kama[1] + sc * (close - kama[1])
 
-// --- SuperTrend adaptativa (bandas más anchas cuando KER es bajo) ---
-stMult     = i_stMult * (1.0 + (1.0 - ker) * i_stAdapt)
-upBand     = hl2 - stMult * atr
-dnBand     = hl2 + stMult * atr
+stMult = i_stMult * (1.0 + (1.0 - ker) * i_stAdapt)
+upBand = hl2 - stMult * atr
+dnBand = hl2 + stMult * atr
 var float stUp = na
 var float stDn = na
-up1        = nz(stUp[1], upBand)
-dn1        = nz(stDn[1], dnBand)
-stUp := close[1] > up1 ? math.max(upBand, up1) : upBand
-stDn := close[1] < dn1 ? math.min(dnBand, dn1) : dnBand
+up1    = nz(stUp[1], upBand)
+dn1    = nz(stDn[1], dnBand)
+stUp  := close[1] > up1 ? math.max(upBand, up1) : upBand
+stDn  := close[1] < dn1 ? math.min(dnBand, dn1) : dnBand
 var int stDir = 1
 stDir := stDir == -1 and close > dn1 ? 1 : stDir == 1 and close < up1 ? -1 : nz(stDir[1], 1)
-stLine     = stDir == 1 ? stUp : stDn
+stLine = stDir == 1 ? stUp : stDn
 
-// Dirección compuesta de M1: acuerdo entre precio>KAMA y SuperTrend.
-m1Bull     = (close > kama ? 1 : 0) + (stDir == 1 ? 1 : 0)   // 0,1,2
-m1Bear     = (close < kama ? 1 : 0) + (stDir == -1 ? 1 : 0)  // 0,1,2
+m1Bull = (close > kama ? 1 : 0) + (stDir == 1  ? 1 : 0)
+m1Bear = (close < kama ? 1 : 0) + (stDir == -1 ? 1 : 0)
 
 // =============================================================================
-//  MÓDULO 2 · TQI (Trend Quality Index) — 4 factores normalizados [0..1]
+//  MÓDULO 2 · TQI (Trend Quality Index)
 // =============================================================================
-// c1: KER instantáneo (eficiencia)
-c1 = ker
-// c2: régimen de volatilidad (ratio ATR normalizado)
+c1       = ker
 volRatio = nz(atr / math.max(ta.sma(atr, i_gateLen), 1e-10), 0.0)
-c2 = math.min(math.max((volRatio - 0.8) / 0.7, 0.0), 1.0)
-// c3: desviación de estructura (cercanía a extremos del rango -> tendencia)
-hh = ta.highest(high, i_devLen)
-ll = ta.lowest(low, i_devLen)
-center = (hh + ll) / 2.0
+c2       = math.min(math.max((volRatio - 0.8) / 0.7, 0.0), 1.0)
+hh       = ta.highest(high, i_devLen)
+ll       = ta.lowest(low,  i_devLen)
+center   = (hh + ll) / 2.0
 halfRange = math.max((hh - ll) / 2.0, 1e-10)
-c3 = math.min(math.abs(close - center) / halfRange, 1.0)
-// c4: persistencia de momentum (coincidencia de dirección barra a barra)
-netDir = math.sign(nz(close - close[i_persistLen], 0))
+c3       = math.min(math.abs(close - center) / halfRange, 1.0)
+netDir   = math.sign(nz(close - close[i_persistLen], 0))
 float cnt = 0.0
 for i = 0 to i_persistLen - 1
     cnt += math.sign(nz(close[i] - close[i + 1], 0)) == netDir ? 1.0 : 0.0
-c4 = i_persistLen > 0 ? cnt / i_persistLen : 0.0
-// TQI ponderado (normalizado por la suma de pesos)
+c4   = i_persistLen > 0 ? cnt / i_persistLen : 0.0
 wSum = math.max(i_tqiW1 + i_tqiW2 + i_tqiW3 + i_tqiW4, 1e-10)
 tqi  = nz((i_tqiW1 * c1 + i_tqiW2 * c2 + i_tqiW3 * c3 + i_tqiW4 * c4) / wSum, 0.0)
 
@@ -192,7 +178,7 @@ tqi  = nz((i_tqiW1 * c1 + i_tqiW2 * c2 + i_tqiW3 * c3 + i_tqiW4 * c4) / wSum, 0.
 //  MÓDULO 3 · VOLUMEN / ORDER FLOW (fallback, sin footprint)
 // =============================================================================
 rng        = high - low
-deltaProxy = rng > 0 ? volume * ((close - low) - (high - close)) / rng : 0.0  // presión compradora estimada
+deltaProxy = rng > 0 ? volume * ((close - low) - (high - close)) / rng : 0.0
 relVol     = volume / math.max(ta.sma(volume, i_volLen), 1e-10)
 obv        = ta.cum(math.sign(ta.change(close)) * nz(volume))
 obvEma     = ta.ema(obv, i_volLen)
@@ -212,18 +198,17 @@ volBear = switch i_volMethod
     => false
 
 // =============================================================================
-//  MÓDULO 4 · PUERTA DE VOLATILIDAD (Gate) / FILTRO ANTI-RANGO
+//  MÓDULO 4 · PUERTA DE VOLATILIDAD (Gate)
 // =============================================================================
 [diPlus, diMinus, adx] = ta.dmi(i_adxLen, i_adxSmooth)
 adxOk    = not i_useAdxGate or nz(adx, 0) >= i_adxThresh
-// volRatio, ker y adx ya están saneados con nz → la expresión no puede ser na (nz no admite bool en v6)
 gateOpen = volRatio >= i_volGate and ker >= i_kerGate and adxOk
 
 // =============================================================================
-//  MÓDULO 5 · ESTRUCTURA — Pivotes, BOS y CHoCH (confirmados, sin repintado)
+//  MÓDULO 5 · ESTRUCTURA — Pivotes, BOS y CHoCH
 // =============================================================================
 ph = ta.pivothigh(i_pivLeft, i_pivRight)
-pl = ta.pivotlow(i_pivLeft, i_pivRight)
+pl = ta.pivotlow(i_pivLeft,  i_pivRight)
 var float lastPH = na
 var float lastPL = na
 if not na(ph)
@@ -238,13 +223,12 @@ bearBreak = not na(lastPL) and close < lastPL and close[1] >= lastPL
 bool isCHoCHbull = false
 bool isCHoCHbear = false
 if bullBreak
-    isCHoCHbull := structDir < 0      // ruptura contra estructura previa = cambio de carácter
+    isCHoCHbull := structDir < 0
     structDir   := 1
 if bearBreak
     isCHoCHbear := structDir > 0
     structDir   := -1
 
-// Dibujo BOS/CHoCH (confirmado al cierre)
 if i_showStruct and bullBreak
     line.new(bar_index - 1, lastPH, bar_index, lastPH, color = color.new(colUp, 0), width = 1)
     label.new(bar_index, lastPH, isCHoCHbull ? "CHoCH↑" : "BOS↑", style = label.style_label_down, color = color.new(colUp, 20), textcolor = color.white, size = size.tiny)
@@ -253,26 +237,24 @@ if i_showStruct and bearBreak
     label.new(bar_index, lastPL, isCHoCHbear ? "CHoCH↓" : "BOS↓", style = label.style_label_up, color = color.new(colDn, 20), textcolor = color.white, size = size.tiny)
 
 // =============================================================================
-//  MÓDULO 6 · RSI BOOSTED (momentum confirmado al cierre)
+//  MÓDULO 6 · RSI BOOSTED
 // =============================================================================
-rsi = ta.rsi(close, i_rsiLen)
-// Boost: cruce confirmado por encima de 34 tras sobreventa / por debajo de 66 tras sobrecompra
-// (ta.lowest/ta.highest se calculan en variables globales para que se evalúen en cada barra)
-rsiLowest  = ta.lowest(rsi, i_persistLen)
+rsi        = ta.rsi(close, i_rsiLen)
+rsiLowest  = ta.lowest(rsi,  i_persistLen)
 rsiHighest = ta.highest(rsi, i_persistLen)
-boostBuy  = ta.crossover(rsi, i_osBoost)  and rsiLowest  <= 30
-boostSell = ta.crossunder(rsi, i_obBoost) and rsiHighest >= 70
+boostBuy   = ta.crossover(rsi,  i_osBoost) and rsiLowest  <= 30
+boostSell  = ta.crossunder(rsi, i_obBoost) and rsiHighest >= 70
 
 // =============================================================================
 //  MÓDULO 7 · CONFLUENCIA HTF NO REPINTABLE
 // =============================================================================
-htfEma   = ta.ema(close, i_htfEmaLen)
-htfState = close > htfEma ? 1 : close < htfEma ? -1 : 0
+htfEma    = ta.ema(close, i_htfEmaLen)
+htfState  = close > htfEma ? 1 : close < htfEma ? -1 : 0
 htfDirRaw = request.security(syminfo.tickerid, i_htf, htfState[1], lookahead = barmerge.lookahead_on)
-htfDir   = i_useHtf ? nz(htfDirRaw, 0) : 0
+htfDir    = i_useHtf ? nz(htfDirRaw, 0) : 0
 
 // =============================================================================
-//  AGOTAMIENTO — Kurtosis rodante de retornos logarítmicos
+//  AGOTAMIENTO — Kurtosis rodante
 // =============================================================================
 ret   = close[1] > 0 ? math.log(close / close[1]) : 0.0
 kMean = ta.sma(ret, i_kurtLen)
@@ -280,50 +262,42 @@ kSd   = ta.stdev(ret, i_kurtLen)
 float s4 = 0.0
 for i = 0 to i_kurtLen - 1
     s4 += math.pow(ret[i] - kMean, 4)
-kurt  = kSd > 0 ? (s4 / i_kurtLen) / math.pow(kSd, 4) : na
+kurt = kSd > 0 ? (s4 / i_kurtLen) / math.pow(kSd, 4) : na
 
 // =============================================================================
 //  SCORE COMPUESTO BIPOLAR 0–100  (50 = neutro)
 //  Pesos: M1 20 · M2 15 · M3 15 · M4 10 · M5 15 · M6 10 · M7 15  = 100
 // =============================================================================
-// M1 Dirección (20)
-m1BullPts = m1Bull / 2.0 * 20.0
-m1BearPts = m1Bear / 2.0 * 20.0
-// M2 Fuerza TQI (15) — graduado por TQI, según dirección SuperTrend
-m2BullPts = stDir == 1  ? 15.0 * tqi : 0.0
-m2BearPts = stDir == -1 ? 15.0 * tqi : 0.0
-// M3 Volumen (15)
-m3BullPts = volBull ? 15.0 : 0.0
-m3BearPts = volBear ? 15.0 : 0.0
-// M4 Gate (10) — refuerza la dirección activa cuando hay expansión
-m4BullPts = gateOpen and stDir == 1  ? 10.0 : 0.0
-m4BearPts = gateOpen and stDir == -1 ? 10.0 : 0.0
-// M5 Estructura (15)
-m5BullPts = structDir > 0 ? 15.0 : 0.0
-m5BearPts = structDir < 0 ? 15.0 : 0.0
-// M6 RSI Boosted (10) — graduado + bonus por cruce boosted
+m1BullPts  = m1Bull / 2.0 * 20.0
+m1BearPts  = m1Bear / 2.0 * 20.0
+m2BullPts  = stDir == 1  ? 15.0 * tqi : 0.0
+m2BearPts  = stDir == -1 ? 15.0 * tqi : 0.0
+m3BullPts  = volBull ? 15.0 : 0.0
+m3BearPts  = volBear ? 15.0 : 0.0
+m4BullPts  = gateOpen and stDir == 1  ? 10.0 : 0.0
+m4BearPts  = gateOpen and stDir == -1 ? 10.0 : 0.0
+m5BullPts  = structDir > 0 ? 15.0 : 0.0
+m5BearPts  = structDir < 0 ? 15.0 : 0.0
 m6BullBase = rsi > i_rsiMid ? 10.0 * math.min((rsi - i_rsiMid) / i_rsiScale, 1.0) : 0.0
 m6BearBase = rsi < i_rsiMid ? 10.0 * math.min((i_rsiMid - rsi) / i_rsiScale, 1.0) : 0.0
 m6BullPts  = boostBuy  ? 10.0 : m6BullBase
 m6BearPts  = boostSell ? 10.0 : m6BearBase
-// M7 HTF (15)
-m7BullPts = htfDir > 0 ? 15.0 : 0.0
-m7BearPts = htfDir < 0 ? 15.0 : 0.0
+m7BullPts  = htfDir > 0 ? 15.0 : 0.0
+m7BearPts  = htfDir < 0 ? 15.0 : 0.0
 
 bullSum = m1BullPts + m2BullPts + m3BullPts + m4BullPts + m5BullPts + m6BullPts + m7BullPts
 bearSum = m1BearPts + m2BearPts + m3BearPts + m4BearPts + m5BearPts + m6BearPts + m7BearPts
 score   = nz(math.max(0.0, math.min(100.0, 50.0 + (bullSum - bearSum) / 2.0)), 50.0)
 
 // =============================================================================
-//  ESTADO DISCRETO (+ override de agotamiento)
+//  ESTADO DISCRETO
 // =============================================================================
 exhaustion = not na(kurt) and kurt > i_kurtThresh and tqi >= i_tqiExhaust and gateOpen and (score >= i_weakBull or score <= i_weakBear)
-// Transición de agotamiento (var bool evita el na de [1]; nz no admite bool en v6)
 var bool exhPrev = false
 exhStart = exhaustion and not exhPrev
 exhPrev := exhaustion
 
-string state = "Neutral / Rango"
+string state    = "Neutral / Rango"
 color  stateCol = colNeu
 if score >= i_strongBull
     state    := gateOpen ? "Alcista fuerte" : "Alcista débil"
@@ -337,117 +311,168 @@ else if score <= i_strongBear
 else if score <= i_weakBear
     state    := "Bajista débil"
     stateCol := colDnW
-else
-    state    := "Neutral / Rango"
-    stateCol := colNeu
-
 if exhaustion
     state    := "Agotamiento / Reversión"
     stateCol := colExh
 
 // =============================================================================
-//  SEÑALES (confirmadas al cierre, sin repintado) + FALSAS RUPTURAS
+//  SEÑALES FUERTES (Gate abierto + Score fuerte + ADX confirmado + cierre)
 // =============================================================================
 strongBullNow = score >= i_strongBull and gateOpen and not exhaustion
 strongBearNow = score <= i_strongBear and gateOpen and not exhaustion
-// var bool para la barra previa (nz no admite bool en v6)
 var bool strongBullPrev = false
 var bool strongBearPrev = false
 bullStart = strongBullNow and not strongBullPrev
 bearStart = strongBearNow and not strongBearPrev
 strongBullPrev := strongBullNow
 strongBearPrev := strongBearNow
-
 confBull = bullStart and barstate.isconfirmed
 confBear = bearStart and barstate.isconfirmed
 
-// Falsa ruptura: hay ruptura de estructura pero sin Gate o sin volumen que la respalde
+// =============================================================================
+//  SEÑALES DÉBILES — etiqueta discreta, sin flecha de entrada
+// =============================================================================
+weakBullNow  = score >= i_weakBull and score < i_strongBull and not exhaustion
+weakBearNow  = score <= i_weakBear and score > i_strongBear and not exhaustion
+var bool weakBullPrev = false
+var bool weakBearPrev = false
+weakBullStart = weakBullNow and not weakBullPrev and barstate.isconfirmed
+weakBearStart = weakBearNow and not weakBearPrev and barstate.isconfirmed
+weakBullPrev := weakBullNow
+weakBearPrev := weakBearNow
+
+// Falsa ruptura: estructura rota sin Gate ni volumen que la respalde
 falseBreak = (bullBreak and (not gateOpen or not volBull)) or (bearBreak and (not gateOpen or not volBear))
+
+// =============================================================================
+//  LÓGICA OPERAR SÍ / NO
+// =============================================================================
+bool scoreOk   = score >= i_weakBull or score <= i_weakBear
+bool htfAlign  = not i_useHtf or htfDir == 0 or (score > 50 and htfDir > 0) or (score < 50 and htfDir < 0)
+bool canOperate = scoreOk and gateOpen and htfAlign and not exhaustion
+
+string noReason = ""
+if not scoreOk
+    noReason := "Score insuficiente"
+else if not gateOpen
+    noReason := (i_useAdxGate and nz(adx, 0) < i_adxThresh) ? "ADX bajo" : "Gate cerrada"
+else if not htfAlign
+    noReason := "HTF contrario"
+else if exhaustion
+    noReason := "Agotamiento"
 
 // =============================================================================
 //  PLOTS
 // =============================================================================
-kamaCol = stateCol
-plot(kama,   "KAMA adaptativa",       color = kamaCol, linewidth = 2)
+plot(kama,   "KAMA adaptativa",       color = stateCol, linewidth = 2)
 plot(stLine, "SuperTrend adaptativa", color = stDir == 1 ? color.new(colUp, 30) : color.new(colDn, 30), linewidth = 1, style = plot.style_linebr)
 
-plotshape(i_showSignals and confBull, title = "Compra fuerte", style = shape.triangleup,   location = location.belowbar, color = colUp,  size = size.small, text = "BUY")
-plotshape(i_showSignals and confBear, title = "Venta fuerte",  style = shape.triangledown, location = location.abovebar, color = colDn,  size = size.small, text = "SELL")
+// Flecha grande SOLO cuando Gate abierto + Score fuerte + ADX confirmado + cierre confirmado
+plotshape(i_showSignals and confBull, title = "Compra fuerte",  style = shape.triangleup,   location = location.belowbar, color = colUp, size = size.large, text = "BUY")
+plotshape(i_showSignals and confBear, title = "Venta fuerte",   style = shape.triangledown, location = location.abovebar, color = colDn, size = size.large, text = "SELL")
 plotshape(i_showFakeouts and falseBreak, title = "Falsa ruptura", style = shape.xcross, location = location.abovebar, color = color.new(color.gray, 0), size = size.tiny)
+
+// Etiqueta discreta de tendencia débil (solo en transición, sin flecha)
+if i_showWeakLabels and weakBullStart
+    label.new(bar_index, low,  "Alcista débil", color = color.new(colUpW, 20), textcolor = color.white, style = label.style_label_up,   size = size.tiny)
+if i_showWeakLabels and weakBearStart
+    label.new(bar_index, high, "Bajista débil", color = color.new(colDnW, 20), textcolor = color.white, style = label.style_label_down, size = size.tiny)
 
 barcolor(i_colorBars ? stateCol : na, title = "Color de vela por estado")
 
 // =============================================================================
 //  TABLA
 // =============================================================================
-tblPos = i_tablePos == "Arriba derecha" ? position.top_right : i_tablePos == "Arriba izquierda" ? position.top_left : i_tablePos == "Abajo derecha" ? position.bottom_right : position.bottom_left
+tblPos = i_tablePos == "Arriba derecha"   ? position.top_right   :
+         i_tablePos == "Arriba izquierda" ? position.top_left    :
+         i_tablePos == "Abajo derecha"    ? position.bottom_right : position.bottom_left
+
 var table tbl = table.new(tblPos, 2, 11, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 50))
 
-f_row(int r, string k, string v, color vc) =>
-    table.cell(tbl, 0, r, k, text_color = color.new(color.white, 0), text_size = size.small, bgcolor = color.new(color.black, 80), text_halign = text.align_left)
-    table.cell(tbl, 1, r, v, text_color = vc, text_size = size.small, bgcolor = color.new(color.black, 80), text_halign = text.align_right)
+tblBg = color.new(color.black, 80)
+
+f_row(int r, string k, string v, color vc, color bgc) =>
+    table.cell(tbl, 0, r, k, text_color = color.new(color.white, 0), text_size = size.small, bgcolor = bgc, text_halign = text.align_left)
+    table.cell(tbl, 1, r, v, text_color = vc,                        text_size = size.small, bgcolor = bgc, text_halign = text.align_right)
 
 if i_showTable and barstate.islast
-    table.cell(tbl, 0, 0, "QRCE-Lite V1", text_color = color.white, text_size = size.normal, bgcolor = color.new(color.gray, 30))
-    table.cell(tbl, 1, 0, str.format("{0,number,#.#}", score), text_color = color.white, text_size = size.normal, bgcolor = stateCol)
-    f_row(1,  "Estado",        state,                                  stateCol)
-    f_row(2,  "Score (0-100)", str.format("{0,number,#.#}", score),    stateCol)
-    f_row(3,  "Sesgo",         bullSum > bearSum ? "Alcista" : bearSum > bullSum ? "Bajista" : "Neutro", bullSum > bearSum ? colUp : bearSum > bullSum ? colDn : colNeu)
-    f_row(4,  "HTF " + i_htf,  htfDir > 0 ? "Alcista" : htfDir < 0 ? "Bajista" : "Neutro/Off", htfDir > 0 ? colUp : htfDir < 0 ? colDn : colNeu)
-    f_row(5,  "Gate volatilidad", gateOpen ? "ABIERTA" : "cerrada",    gateOpen ? colUp : colNeu)
-    f_row(6,  "Agotamiento",   exhaustion ? "SÍ — reversión" : "no",   exhaustion ? colExh : colNeu)
-    f_row(7,  "KER",           str.format("{0,number,#.##}", ker),     ker >= i_kerGate ? colUp : colNeu)
-    f_row(8,  "TQI",           str.format("{0,number,#.##}", tqi),     tqi >= i_tqiExhaust ? colUp : colNeu)
-    f_row(9,  "ADX",           str.format("{0,number,#.#}", adx),      adx >= i_adxThresh ? colUp : colNeu)
-    f_row(10, "RSI",           str.format("{0,number,#.#}", rsi),      rsi > i_rsiMid ? colUp : colDn)
+    operBg  = canOperate ? color.new(color.green, 50) : color.new(color.red, 40)
+    operTxt = canOperate ? "SÍ" : "NO: " + noReason
+    gateBg  = gateOpen   ? tblBg                     : color.new(color.orange, 35)
+    gateTxt = gateOpen   ? "ABIERTA"                 : "CERRADA — NO OPERAR"
+    gateCol = gateOpen   ? colUp                     : colExh
+
+    // Cabecera
+    table.cell(tbl, 0, 0, "QRCE-Lite V1.1",                       text_color = color.white, text_size = size.normal, bgcolor = color.new(color.gray, 30), text_halign = text.align_left)
+    table.cell(tbl, 1, 0, str.format("{0,number,#.#}", score),     text_color = color.white, text_size = size.normal, bgcolor = stateCol,                   text_halign = text.align_right)
+
+    // Fila OPERAR (prominente)
+    table.cell(tbl, 0, 1, "OPERAR", text_color = color.white, text_size = size.normal, bgcolor = operBg, text_halign = text.align_left)
+    table.cell(tbl, 1, 1, operTxt,  text_color = color.white, text_size = size.normal, bgcolor = operBg, text_halign = text.align_right)
+
+    // Fila Gate (fondo naranja/rojo si cerrada)
+    table.cell(tbl, 0, 2, "Gate",   text_color = color.white, text_size = size.small, bgcolor = gateBg, text_halign = text.align_left)
+    table.cell(tbl, 1, 2, gateTxt,  text_color = gateCol,     text_size = size.small, bgcolor = gateBg, text_halign = text.align_right)
+
+    f_row(3,  "Estado",      state,                                                   stateCol, tblBg)
+    f_row(4,  "Score",       str.format("{0,number,#.#}", score),                     stateCol, tblBg)
+    f_row(5,  "HTF " + i_htf, htfDir > 0 ? "Alcista" : htfDir < 0 ? "Bajista" : "Neutro/Off", htfDir > 0 ? colUp : htfDir < 0 ? colDn : colNeu, tblBg)
+    f_row(6,  "ADX",         str.format("{0,number,#.#}", adx),                      nz(adx, 0) >= i_adxThresh ? colUp : colNeu, tblBg)
+    f_row(7,  "KER",         str.format("{0,number,#.##}", ker),                     ker >= i_kerGate ? colUp : colNeu, tblBg)
+    f_row(8,  "TQI",         str.format("{0,number,#.##}", tqi),                     tqi >= i_tqiExhaust ? colUp : colNeu, tblBg)
+    f_row(9,  "Agotamiento", exhaustion ? "SÍ — reversión" : "no",                   exhaustion ? colExh : colNeu, tblBg)
+    f_row(10, "RSI",         str.format("{0,number,#.#}", rsi),                      rsi > i_rsiMid ? colUp : colDn, tblBg)
 
 // =============================================================================
-//  ALERTAS  (configurar como "Once per bar close" para no repintado total)
+//  ALERTAS  (configurar como "Once per bar close")
 // =============================================================================
-alertcondition(confBull,    title = "QRCE_BULLISH_TREND_START", message = "QRCE-Lite: inicio de tendencia ALCISTA fuerte (score confirmado, Gate abierto).")
-alertcondition(confBear,    title = "QRCE_BEARISH_TREND_START", message = "QRCE-Lite: inicio de tendencia BAJISTA fuerte (score confirmado, Gate abierto).")
-alertcondition(exhStart, title = "QRCE_REGIME_EXHAUSTION_WARNING", message = "QRCE-Lite: AGOTAMIENTO / tensión extrema (kurtosis alta + TQI alto). Posible reversión.")
+alertcondition(confBull,  title = "QRCE_BULLISH_TREND_START",      message = "QRCE-Lite: inicio de tendencia ALCISTA fuerte (score confirmado, Gate abierto).")
+alertcondition(confBear,  title = "QRCE_BEARISH_TREND_START",      message = "QRCE-Lite: inicio de tendencia BAJISTA fuerte (score confirmado, Gate abierto).")
+alertcondition(exhStart,  title = "QRCE_REGIME_EXHAUSTION_WARNING", message = "QRCE-Lite: AGOTAMIENTO / tensión extrema (kurtosis alta + TQI alto). Posible reversión.")
 
 // =============================================================================
 //  ───────────────────────────  DOCUMENTACIÓN  ───────────────────────────────
 //
 //  CÓMO USARLO (detalle)
 //  ---------------------
-//  · Marco de operación + HTF: por ejemplo 15m/1H operativo con HTF 4H, o 1H con
-//    HTF D1. El HTF aporta 15 puntos al score y filtra contratendencia.
-//  · El SCORE es bipolar: 50 = equilibrio. ≥75 alcista fuerte, ≥60 alcista débil,
+//  · Marco de operación + HTF: 15m/1H operativo con HTF 4H, o 1H con HTF D1.
+//    El HTF aporta 15 puntos al score y filtra contratendencia.
+//  · SCORE bipolar: 50 = equilibrio. ≥75 alcista fuerte, ≥60 alcista débil,
 //    40–60 rango, ≤40 bajista débil, ≤25 bajista fuerte. Ajustables en inputs.
-//  · La PUERTA DE VOLATILIDAD (Gate) es el filtro maestro anti-rango: si está
-//    cerrada (volatilidad comprimida / KER bajo / ADX bajo) NO debes operar
-//    rupturas, aunque el score sea alto → se degrada a "débil".
-//  · Triángulos BUY/SELL: transición a estado fuerte con Gate abierto, confirmada
-//    al cierre. La "X" gris avisa de ruptura sin respaldo (posible stop hunt).
-//  · "Agotamiento" (naranja): kurtosis leptocúrtica + tendencia madura → riesgo de
-//    reversión; el indicador deja de dar entradas a favor de tendencia.
+//  · Tabla OPERAR SÍ/NO: la tabla muestra el primer bloqueador activo:
+//      – Score insuficiente: score en zona neutral (no hay tendencia clara)
+//      – Gate cerrada: KER bajo o volatilidad comprimida
+//      – ADX bajo: ADX por debajo del umbral (mercado sin tendencia medible)
+//      – HTF contrario: el marco superior apunta en dirección opuesta
+//      – Agotamiento: kurtosis leptocúrtica + TQI alto (posible reversión)
+//  · PUERTA DE VOLATILIDAD: si está cerrada, el fondo de la fila Gate se vuelve
+//    naranja y "OPERAR: NO" aparece en rojo. NO operes rupturas en ese estado.
+//  · Flechas grandes BUY/SELL: aparecen SOLO al cierre de vela con Gate abierto,
+//    score fuerte, ADX confirmado (barstate.isconfirmed). Una sola vez por
+//    transición de estado. No repintan.
+//  · Etiquetas "Alcista débil" / "Bajista débil": tendencia iniciada pero score
+//    por debajo del umbral fuerte. Sin flecha; solo para contexto.
+//  · "X" gris: ruptura de estructura sin Gate ni volumen = posible stop hunt.
+//  · Agotamiento (naranja): kurtosis leptocúrtica + tendencia madura → riesgo
+//    de reversión; el indicador suspende entradas a favor de tendencia.
 //
 //  LIMITACIONES REALES
 //  -------------------
-//  1. Indicador de confluencia → tiene retraso inherente (pivotes necesitan
-//     i_pivRight barras para confirmar; KAMA/SuperTrend reaccionan al cierre).
-//  2. Sin footprint real: el módulo de volumen es una APROXIMACIÓN (delta proxy /
-//     volumen relativo / OBV / VWAP). En FX sin volumen real su aporte es pobre.
-//  3. El score y los umbrales NO están calibrados por activo: requieren ajuste
-//     (idealmente validación OOS / walk-forward, no incluida en el indicador).
+//  1. Indicador de confluencia → retraso inherente (pivotes necesitan i_pivRight
+//     barras; KAMA/SuperTrend reaccionan al cierre).
+//  2. Sin footprint real: módulo de volumen es APROXIMACIÓN. En FX su aporte es
+//     pobre (volumen de ticks ≠ volumen real).
+//  3. Score y umbrales NO calibrados por activo: requieren ajuste y validación OOS.
 //  4. No interpreta noticias ni gaps; en shocks puede tardar en adaptarse.
-//  5. BOS/CHoCH usa una heurística de ruptura de último pivote (simplificada),
-//     no un motor SMC completo (order blocks, FVG, liquidez multi-nivel).
-//  6. No es una garantía de acierto: es una herramienta de contexto y filtro.
+//  5. BOS/CHoCH usa heurística de último pivote (simplificada, no SMC completo).
+//  6. No es una garantía de acierto: herramienta de contexto y filtro.
 //
 //  PROPUESTA V2 (siguiente iteración)
 //  ----------------------------------
-//  · Footprint / Order Flow real: integrar request.footprint() (delta bid/ask,
-//    POC dinámico, absorción) como confirmación opcional con detección de
-//    disponibilidad y degradación automática al fallback de V1.
-//  · SuperTrend asimétrica autorregulada por TQI (multiplicador activo/pasivo) y
-//    Character-Flip proactivo (reversión anticipada por colapso de TQI).
-//  · Motor SMC completo con polylines: order blocks, FVG (cajas), barridos de
-//    liquidez y BOS/CHoCH multi-nivel.
-//  · Coeficiente de bimodalidad junto a la kurtosis para el agotamiento.
+//  · Footprint / Order Flow real: request.footprint() con degradación automática.
+//  · SuperTrend asimétrica con Character-Flip proactivo.
+//  · Motor SMC completo: order blocks, FVG, barridos de liquidez, BOS/CHoCH multinivel.
+//  · Coeficiente de bimodalidad + kurtosis para agotamiento.
 //  · Score percentilizado por activo (escala dinámica auto-adaptativa).
 //  · Confluencia HTF multinivel (2 marcos superiores) y panel de alineación.
 //  · Backtester/strategy gemelo para validar OOS, walk-forward y Monte Carlo.
