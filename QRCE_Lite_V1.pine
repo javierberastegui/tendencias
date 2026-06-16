@@ -216,7 +216,8 @@ volBear = switch i_volMethod
 // =============================================================================
 [diPlus, diMinus, adx] = ta.dmi(i_adxLen, i_adxSmooth)
 adxOk    = not i_useAdxGate or nz(adx, 0) >= i_adxThresh
-gateOpen = nz(volRatio >= i_volGate and ker >= i_kerGate and adxOk, false)
+// volRatio, ker y adx ya están saneados con nz → la expresión no puede ser na (nz no admite bool en v6)
+gateOpen = volRatio >= i_volGate and ker >= i_kerGate and adxOk
 
 // =============================================================================
 //  MÓDULO 5 · ESTRUCTURA — Pivotes, BOS y CHoCH (confirmados, sin repintado)
@@ -256,8 +257,11 @@ if i_showStruct and bearBreak
 // =============================================================================
 rsi = ta.rsi(close, i_rsiLen)
 // Boost: cruce confirmado por encima de 34 tras sobreventa / por debajo de 66 tras sobrecompra
-boostBuy  = ta.crossover(rsi, i_osBoost)  and ta.lowest(rsi, i_persistLen) <= 30
-boostSell = ta.crossunder(rsi, i_obBoost) and ta.highest(rsi, i_persistLen) >= 70
+// (ta.lowest/ta.highest se calculan en variables globales para que se evalúen en cada barra)
+rsiLowest  = ta.lowest(rsi, i_persistLen)
+rsiHighest = ta.highest(rsi, i_persistLen)
+boostBuy  = ta.crossover(rsi, i_osBoost)  and rsiLowest  <= 30
+boostSell = ta.crossunder(rsi, i_obBoost) and rsiHighest >= 70
 
 // =============================================================================
 //  MÓDULO 7 · CONFLUENCIA HTF NO REPINTABLE
@@ -314,6 +318,10 @@ score   = nz(math.max(0.0, math.min(100.0, 50.0 + (bullSum - bearSum) / 2.0)), 5
 //  ESTADO DISCRETO (+ override de agotamiento)
 // =============================================================================
 exhaustion = not na(kurt) and kurt > i_kurtThresh and tqi >= i_tqiExhaust and gateOpen and (score >= i_weakBull or score <= i_weakBear)
+// Transición de agotamiento (var bool evita el na de [1]; nz no admite bool en v6)
+var bool exhPrev = false
+exhStart = exhaustion and not exhPrev
+exhPrev := exhaustion
 
 string state = "Neutral / Rango"
 color  stateCol = colNeu
@@ -342,8 +350,13 @@ if exhaustion
 // =============================================================================
 strongBullNow = score >= i_strongBull and gateOpen and not exhaustion
 strongBearNow = score <= i_strongBear and gateOpen and not exhaustion
-bullStart = strongBullNow and not nz(strongBullNow[1], false)
-bearStart = strongBearNow and not nz(strongBearNow[1], false)
+// var bool para la barra previa (nz no admite bool en v6)
+var bool strongBullPrev = false
+var bool strongBearPrev = false
+bullStart = strongBullNow and not strongBullPrev
+bearStart = strongBearNow and not strongBearPrev
+strongBullPrev := strongBullNow
+strongBearPrev := strongBearNow
 
 confBull = bullStart and barstate.isconfirmed
 confBear = bearStart and barstate.isconfirmed
@@ -393,7 +406,7 @@ if i_showTable and barstate.islast
 // =============================================================================
 alertcondition(confBull,    title = "QRCE_BULLISH_TREND_START", message = "QRCE-Lite: inicio de tendencia ALCISTA fuerte (score confirmado, Gate abierto).")
 alertcondition(confBear,    title = "QRCE_BEARISH_TREND_START", message = "QRCE-Lite: inicio de tendencia BAJISTA fuerte (score confirmado, Gate abierto).")
-alertcondition(exhaustion and not nz(exhaustion[1], false), title = "QRCE_REGIME_EXHAUSTION_WARNING", message = "QRCE-Lite: AGOTAMIENTO / tensión extrema (kurtosis alta + TQI alto). Posible reversión.")
+alertcondition(exhStart, title = "QRCE_REGIME_EXHAUSTION_WARNING", message = "QRCE-Lite: AGOTAMIENTO / tensión extrema (kurtosis alta + TQI alto). Posible reversión.")
 
 // =============================================================================
 //  ───────────────────────────  DOCUMENTACIÓN  ───────────────────────────────
