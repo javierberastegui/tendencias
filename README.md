@@ -1,0 +1,2 @@
+# tendencias
+Indicador de tendencias 
