@@ -1,0 +1,587 @@
+// =============================================================================
+//  QRCE Fractal Swing V2.0 — Sincronía Semanal / Diario / 1H
+//  Autor: Loki
+//  Pine Script v6 · overlay=true
+//  Versión - fractalidad MTF estricta para swing trading
+// =============================================================================
+//
+//  OBJETIVO
+//  --------
+//  Adaptación swing del QRCE-Lite V1.1. La V1 usaba una confirmación HTF simple;
+//  esta V2 crea una capa central de fractalidad para NO buscar entrada hasta que
+//  Semanal + Diario + 1H estén sincronizados en la misma dirección.
+//
+//  USO PRINCIPAL
+//  -------------
+//  · Contexto mayor: Semanal.
+//  · Confirmación operativa: Diario.
+//  · Entrada / gatillo fino: 1H.
+//  · Señal principal: BUSCAR LONG / BUSCAR SHORT solo cuando los 3 marcos están alineados.
+//  · Gestión incluida: entrada aproximada, SL técnico y TP por R:R mínimo 1:2.
+//
+//  NO REPINTADO
+//  ------------
+//  · Los marcos superiores usan request.security(..., serie[1], lookahead_on),
+//    es decir, último cierre confirmado del marco consultado.
+//  · Las alertas se emiten solo al cierre de vela con barstate.isconfirmed.
+//  · Los pivotes usan confirmación derecha.
+//
+//  EVENTOS ESTRUCTURADOS
+//  ---------------------
+//  · Los módulos calculan contexto.
+//  · La capa central de reglas decide si hay evento operable.
+//  · Las alertas dinámicas alert() emiten JSON para webhook / Telegram / OpenClaw.
+// =============================================================================
+
+//@version=6
+indicator("QRCE Fractal Swing V2.0 — W/D/1H Sync", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 200)
+
+// =============================================================================
+//  INPUTS
+// =============================================================================
+grpFractal = "1 · Fractalidad Swing"
+i_tfWeekly       = input.timeframe("W",   "Marco 1 — Semanal", group = grpFractal)
+i_tfDaily        = input.timeframe("D",   "Marco 2 — Diario",  group = grpFractal)
+i_tfEntry        = input.timeframe("60",  "Marco 3 — Entrada", group = grpFractal)
+i_syncMode       = input.string("Fuerte", "Modo de sincronía", options = ["Fuerte", "Débil aceptada"], group = grpFractal, tooltip = "Fuerte exige score fuerte. Débil aceptada permite score direccional débil.")
+i_requireGateAll = input.bool(false, "Exigir Gate abierta también en semanal y diario", group = grpFractal, tooltip = "Si se activa, la sincronía exige volatilidad/tendencia medible en los tres marcos. Más estricto, menos señales.")
+i_requireEntryGate = input.bool(true, "Exigir Gate abierta en 1H", group = grpFractal)
+i_triggerMode    = input.string("Solo al sincronizar", "Gatillo visual", options = ["Solo al sincronizar", "Sincronía + pullback KAMA"], group = grpFractal)
+
+grpDir = "2 · Dirección base (KER / KAMA / SuperTrend)"
+i_kerLen     = input.int(10, "Longitud KER", minval = 2, group = grpDir)
+i_kamaFast   = input.int(2,  "KAMA — periodo rápido", minval = 1, group = grpDir)
+i_kamaSlow   = input.int(30, "KAMA — periodo lento", minval = 2, group = grpDir)
+i_atrLen     = input.int(10, "Longitud ATR", minval = 1, group = grpDir)
+i_stMult     = input.float(3.0, "SuperTrend — multiplicador base", minval = 0.5, step = 0.1, group = grpDir)
+i_stAdapt    = input.float(1.0, "SuperTrend — adaptación por KER", minval = 0.0, step = 0.1, group = grpDir)
+
+grpGate = "3 · Gate anti-rango"
+i_gateLen    = input.int(20, "Media ATR para ratio de volatilidad", minval = 2, group = grpGate)
+i_volGate    = input.float(1.0, "Umbral ratio volatilidad", minval = 0.1, step = 0.05, group = grpGate)
+i_kerGate    = input.float(0.30, "Umbral mínimo KER", minval = 0.0, maxval = 1.0, step = 0.01, group = grpGate)
+i_useAdxGate = input.bool(true, "Usar ADX en Gate", group = grpGate)
+i_adxLen     = input.int(14, "ADX — longitud DI", minval = 1, group = grpGate)
+i_adxSmooth  = input.int(14, "ADX — suavizado", minval = 1, group = grpGate)
+i_adxThresh  = input.float(20.0, "ADX — umbral tendencia", minval = 1, step = 1, group = grpGate)
+
+grpTqi = "4 · TQI (Trend Quality Index)"
+i_tqiW1 = input.float(0.40, "Peso KER", minval = 0, maxval = 1, step = 0.05, group = grpTqi)
+i_tqiW2 = input.float(0.20, "Peso volatilidad", minval = 0, maxval = 1, step = 0.05, group = grpTqi)
+i_tqiW3 = input.float(0.20, "Peso desviación estructura", minval = 0, maxval = 1, step = 0.05, group = grpTqi)
+i_tqiW4 = input.float(0.20, "Peso persistencia momentum", minval = 0, maxval = 1, step = 0.05, group = grpTqi)
+i_persistLen = input.int(10, "Persistencia momentum — barras", minval = 2, group = grpTqi)
+i_devLen     = input.int(50, "Desviación estructura — barras", minval = 2, group = grpTqi)
+
+grpRsi = "5 · Momentum RSI"
+i_rsiLen   = input.int(14, "RSI — longitud", minval = 1, group = grpRsi)
+i_rsiMid   = input.float(50, "RSI — línea media", step = 1, group = grpRsi)
+i_rsiScale = input.float(20, "RSI — escala", minval = 1, step = 1, group = grpRsi)
+i_osBoost  = input.float(34, "RSI Boost — sobreventa", step = 1, group = grpRsi)
+i_obBoost  = input.float(66, "RSI Boost — sobrecompra", step = 1, group = grpRsi)
+
+grpStruct = "6 · Estructura"
+i_pivLeft  = input.int(5, "Pivote — barras izquierda", minval = 1, group = grpStruct)
+i_pivRight = input.int(5, "Pivote — barras derecha", minval = 1, group = grpStruct)
+
+grpVol = "7 · Volumen"
+i_volMethod = input.string("Delta proxy", "Método volumen", options = ["Delta proxy", "Volumen relativo", "OBV", "VWAP"], group = grpVol)
+i_volLen    = input.int(20, "Volumen — longitud media", minval = 2, group = grpVol)
+i_volThresh = input.float(1.0, "Volumen relativo — umbral", minval = 0.1, step = 0.05, group = grpVol)
+
+grpExh = "8 · Agotamiento"
+i_kurtLen    = input.int(21, "Kurtosis — ventana retornos", minval = 4, group = grpExh)
+i_kurtThresh = input.float(4.5, "Kurtosis — umbral", minval = 3.0, step = 0.1, group = grpExh)
+i_tqiExhaust = input.float(0.55, "TQI mínimo para agotamiento", minval = 0, maxval = 1, step = 0.05, group = grpExh)
+
+grpScore = "9 · Score"
+i_strongBull = input.float(75, "Alcista fuerte ≥", minval = 50, maxval = 100, step = 1, group = grpScore)
+i_weakBull   = input.float(60, "Alcista débil ≥", minval = 50, maxval = 100, step = 1, group = grpScore)
+i_weakBear   = input.float(40, "Bajista débil ≤", minval = 0, maxval = 50, step = 1, group = grpScore)
+i_strongBear = input.float(25, "Bajista fuerte ≤", minval = 0, maxval = 50, step = 1, group = grpScore)
+
+grpRisk = "10 · Entrada / SL / TP"
+i_rrMin        = input.float(2.0, "R:R mínimo para TP1", minval = 2.0, step = 0.25, group = grpRisk)
+i_rrRunner     = input.float(3.0, "R:R TP2 / runner", minval = 2.0, step = 0.25, group = grpRisk)
+i_slMode       = input.string("Swing + ATR", "Modo SL", options = ["Swing + ATR", "ATR puro"], group = grpRisk)
+i_slLookback   = input.int(14, "Swing lookback para SL", minval = 2, group = grpRisk)
+i_slAtrBuffer  = input.float(0.25, "Buffer ATR sobre swing", minval = 0.0, step = 0.05, group = grpRisk)
+i_atrSLMult    = input.float(1.5, "ATR puro — multiplicador", minval = 0.25, step = 0.25, group = grpRisk)
+i_minTicksRisk = input.int(10, "Riesgo mínimo en ticks", minval = 1, group = grpRisk)
+
+grpViz = "11 · Visual"
+i_showTable      = input.bool(true, "Mostrar panel", group = grpViz)
+i_showSignals    = input.bool(true, "Mostrar señales BUSCAR", group = grpViz)
+i_showLevels     = input.bool(true, "Dibujar Entrada / SL / TP", group = grpViz)
+i_keepOnlyLast   = input.bool(true, "Mantener solo último setup dibujado", group = grpViz)
+i_projectionBars = input.int(80, "Proyección de niveles en barras", minval = 10, group = grpViz)
+i_colorBars      = input.bool(false, "Colorear velas por sincronía", group = grpViz)
+i_tablePos       = input.string("Arriba derecha", "Posición panel", options = ["Arriba derecha", "Arriba izquierda", "Abajo derecha", "Abajo izquierda"], group = grpViz)
+
+grpAlerts = "12 · Alertas / eventos"
+i_enableJsonAlerts = input.bool(true, "Emitir alertas JSON con alert()", group = grpAlerts)
+i_alertOnSync      = input.bool(true, "Alertar al sincronizar fractalidad", group = grpAlerts)
+i_alertOnLostSync  = input.bool(true, "Alertar al perder sincronía", group = grpAlerts)
+
+// =============================================================================
+//  PALETA
+// =============================================================================
+colUp   = color.rgb(0, 200, 120)
+colDn   = color.rgb(220, 40, 60)
+colUpW  = color.new(colUp, 45)
+colDnW  = color.new(colDn, 45)
+colNeu  = color.new(color.gray, 20)
+colWarn = color.rgb(255, 165, 0)
+colInfo = color.rgb(80, 160, 255)
+colBg   = color.new(color.black, 82)
+
+// =============================================================================
+//  FUNCIONES
+// =============================================================================
+f_dirText(int d) =>
+    d > 0 ? "ALCISTA" : d < 0 ? "BAJISTA" : "NEUTRO"
+
+f_dirColor(int d) =>
+    d > 0 ? colUp : d < 0 ? colDn : colNeu
+
+f_yesNo(bool b) =>
+    b ? "SÍ" : "NO"
+
+f_price(float p) =>
+    na(p) ? "n/a" : str.tostring(p, format.mintick)
+
+f_engine() =>
+    chg = math.abs(close - close[i_kerLen])
+    path = math.sum(math.abs(close - close[1]), i_kerLen)
+    ker = nz(path != 0 ? chg / path : 0.0, 0.0)
+
+    atr = ta.atr(i_atrLen)
+    fastSC = 2.0 / (i_kamaFast + 1)
+    slowSC = 2.0 / (i_kamaSlow + 1)
+    sc = math.pow(ker * (fastSC - slowSC) + slowSC, 2)
+
+    var float kama = na
+    kama := na(kama[1]) ? close : kama[1] + sc * (close - kama[1])
+
+    stMult = i_stMult * (1.0 + (1.0 - ker) * i_stAdapt)
+    upBand = hl2 - stMult * atr
+    dnBand = hl2 + stMult * atr
+
+    var float stUp = na
+    var float stDn = na
+    up1 = nz(stUp[1], upBand)
+    dn1 = nz(stDn[1], dnBand)
+    stUp := close[1] > up1 ? math.max(upBand, up1) : upBand
+    stDn := close[1] < dn1 ? math.min(dnBand, dn1) : dnBand
+
+    var int stDir = 1
+    stDir := stDir == -1 and close > dn1 ? 1 : stDir == 1 and close < up1 ? -1 : nz(stDir[1], 1)
+    stLine = stDir == 1 ? stUp : stDn
+
+    m1Bull = (close > kama ? 1 : 0) + (stDir == 1 ? 1 : 0)
+    m1Bear = (close < kama ? 1 : 0) + (stDir == -1 ? 1 : 0)
+
+    volRatio = nz(atr / math.max(ta.sma(atr, i_gateLen), 1e-10), 0.0)
+    c1 = ker
+    c2 = math.min(math.max((volRatio - 0.8) / 0.7, 0.0), 1.0)
+    hh = ta.highest(high, i_devLen)
+    ll = ta.lowest(low, i_devLen)
+    center = (hh + ll) / 2.0
+    halfRange = math.max((hh - ll) / 2.0, 1e-10)
+    c3 = math.min(math.abs(close - center) / halfRange, 1.0)
+    netDir = math.sign(nz(close - close[i_persistLen], 0))
+
+    float cnt = 0.0
+    for i = 0 to i_persistLen - 1
+        cnt += math.sign(nz(close[i] - close[i + 1], 0)) == netDir ? 1.0 : 0.0
+
+    c4 = i_persistLen > 0 ? cnt / i_persistLen : 0.0
+    wSum = math.max(i_tqiW1 + i_tqiW2 + i_tqiW3 + i_tqiW4, 1e-10)
+    tqi = nz((i_tqiW1 * c1 + i_tqiW2 * c2 + i_tqiW3 * c3 + i_tqiW4 * c4) / wSum, 0.0)
+
+    rng = high - low
+    deltaProxy = rng > 0 ? volume * ((close - low) - (high - close)) / rng : 0.0
+    relVol = volume / math.max(ta.sma(volume, i_volLen), 1e-10)
+    obv = ta.cum(math.sign(ta.change(close)) * nz(volume))
+    obvEma = ta.ema(obv, i_volLen)
+    vwapVal = ta.vwap(hlc3)
+
+    volBull = switch i_volMethod
+        "Delta proxy"      => deltaProxy > 0 and relVol >= i_volThresh
+        "Volumen relativo" => relVol >= i_volThresh and close > open
+        "OBV"              => obv > obvEma
+        "VWAP"             => close > vwapVal and relVol >= i_volThresh
+        => false
+
+    volBear = switch i_volMethod
+        "Delta proxy"      => deltaProxy < 0 and relVol >= i_volThresh
+        "Volumen relativo" => relVol >= i_volThresh and close < open
+        "OBV"              => obv < obvEma
+        "VWAP"             => close < vwapVal and relVol >= i_volThresh
+        => false
+
+    [diPlus, diMinus, adx] = ta.dmi(i_adxLen, i_adxSmooth)
+    adxOk = not i_useAdxGate or nz(adx, 0) >= i_adxThresh
+    gateOpen = volRatio >= i_volGate and ker >= i_kerGate and adxOk
+
+    ph = ta.pivothigh(i_pivLeft, i_pivRight)
+    pl = ta.pivotlow(i_pivLeft, i_pivRight)
+
+    var float lastPH = na
+    var float lastPL = na
+    if not na(ph)
+        lastPH := ph
+    if not na(pl)
+        lastPL := pl
+
+    var int structDir = 0
+    bullBreak = not na(lastPH) and close > lastPH and close[1] <= lastPH
+    bearBreak = not na(lastPL) and close < lastPL and close[1] >= lastPL
+
+    if bullBreak
+        structDir := 1
+    if bearBreak
+        structDir := -1
+
+    rsi = ta.rsi(close, i_rsiLen)
+    rsiLowest = ta.lowest(rsi, i_persistLen)
+    rsiHighest = ta.highest(rsi, i_persistLen)
+    boostBuy = ta.crossover(rsi, i_osBoost) and rsiLowest <= 30
+    boostSell = ta.crossunder(rsi, i_obBoost) and rsiHighest >= 70
+
+    ret = close[1] > 0 ? math.log(close / close[1]) : 0.0
+    kMean = ta.sma(ret, i_kurtLen)
+    kSd = ta.stdev(ret, i_kurtLen)
+
+    float s4 = 0.0
+    for i = 0 to i_kurtLen - 1
+        s4 += math.pow(ret[i] - kMean, 4)
+
+    kurt = kSd > 0 ? (s4 / i_kurtLen) / math.pow(kSd, 4) : na
+
+    m1BullPts = m1Bull / 2.0 * 20.0
+    m1BearPts = m1Bear / 2.0 * 20.0
+    m2BullPts = stDir == 1 ? 15.0 * tqi : 0.0
+    m2BearPts = stDir == -1 ? 15.0 * tqi : 0.0
+    m3BullPts = volBull ? 15.0 : 0.0
+    m3BearPts = volBear ? 15.0 : 0.0
+    m4BullPts = gateOpen and stDir == 1 ? 10.0 : 0.0
+    m4BearPts = gateOpen and stDir == -1 ? 10.0 : 0.0
+    m5BullPts = structDir > 0 ? 15.0 : 0.0
+    m5BearPts = structDir < 0 ? 15.0 : 0.0
+    m6BullBase = rsi > i_rsiMid ? 10.0 * math.min((rsi - i_rsiMid) / i_rsiScale, 1.0) : 0.0
+    m6BearBase = rsi < i_rsiMid ? 10.0 * math.min((i_rsiMid - rsi) / i_rsiScale, 1.0) : 0.0
+    m6BullPts = boostBuy ? 10.0 : m6BullBase
+    m6BearPts = boostSell ? 10.0 : m6BearBase
+
+    bullSum = m1BullPts + m2BullPts + m3BullPts + m4BullPts + m5BullPts + m6BullPts
+    bearSum = m1BearPts + m2BearPts + m3BearPts + m4BearPts + m5BearPts + m6BearPts
+    score = nz(math.max(0.0, math.min(100.0, 50.0 + (bullSum - bearSum) / 2.0)), 50.0)
+
+    exhaustion = not na(kurt) and kurt > i_kurtThresh and tqi >= i_tqiExhaust and gateOpen and (score >= i_weakBull or score <= i_weakBear)
+
+    strongDir = score >= i_strongBull ? 1 : score <= i_strongBear ? -1 : 0
+    looseDir = score >= i_weakBull ? 1 : score <= i_weakBear ? -1 : 0
+    rawDir = i_syncMode == "Fuerte" ? strongDir : looseDir
+    dir = exhaustion ? 0 : rawDir
+
+    [dir, score, gateOpen, exhaustion, ker, adx, tqi, rsi, kama, stLine, atr, structDir]
+
+// Payload no repintable para request.security.
+// Cada dato usa [1] dentro del marco solicitado: último cierre confirmado del TF superior.
+f_engine_confirmed() =>
+    [d, s, g, e, k, a, tq, r, ka, st, at, sd] = f_engine()
+    [d[1], s[1], g[1], e[1], k[1], a[1], tq[1], r[1]]
+
+// =============================================================================
+//  CÁLCULO LOCAL + FRACTALIDAD CONFIRMADA
+// =============================================================================
+[localDir, localScore, localGate, localExh, localKer, localAdx, localTqi, localRsi, localKama, localStLine, localAtr, localStructDir] = f_engine()
+
+[wDir, wScore, wGate, wExh, wKer, wAdx, wTqi, wRsi] = request.security(syminfo.tickerid, i_tfWeekly, f_engine_confirmed(), lookahead = barmerge.lookahead_on)
+[dDir, dScore, dGate, dExh, dKer, dAdx, dTqi, dRsi] = request.security(syminfo.tickerid, i_tfDaily, f_engine_confirmed(), lookahead = barmerge.lookahead_on)
+[eDir, eScore, eGate, eExh, eKer, eAdx, eTqi, eRsi] = request.security(syminfo.tickerid, i_tfEntry, f_engine_confirmed(), lookahead = barmerge.lookahead_on)
+
+weeklyLongOk  = wDir > 0 and (not i_requireGateAll or wGate)
+dailyLongOk   = dDir > 0 and (not i_requireGateAll or dGate)
+entryLongOk   = eDir > 0 and (not i_requireEntryGate or eGate)
+
+weeklyShortOk = wDir < 0 and (not i_requireGateAll or wGate)
+dailyShortOk  = dDir < 0 and (not i_requireGateAll or dGate)
+entryShortOk  = eDir < 0 and (not i_requireEntryGate or eGate)
+
+syncLong = weeklyLongOk and dailyLongOk and entryLongOk
+syncShort = weeklyShortOk and dailyShortOk and entryShortOk
+syncAny = syncLong or syncShort
+
+lostSync = not syncAny and syncAny[1] and barstate.isconfirmed
+syncLongStart = syncLong and not syncLong[1] and barstate.isconfirmed
+syncShortStart = syncShort and not syncShort[1] and barstate.isconfirmed
+
+pullbackLong = syncLong and barstate.isconfirmed and close > localKama and close > localStLine and (ta.crossover(close, localKama) or (low <= localKama and close > open))
+pullbackShort = syncShort and barstate.isconfirmed and close < localKama and close < localStLine and (ta.crossunder(close, localKama) or (high >= localKama and close < open))
+
+longSignal = i_triggerMode == "Solo al sincronizar" ? syncLongStart : pullbackLong
+shortSignal = i_triggerMode == "Solo al sincronizar" ? syncShortStart : pullbackShort
+
+// =============================================================================
+//  ENTRADA APROXIMADA / SL / TP
+// =============================================================================
+entryLong = close
+entryShort = close
+
+swingLow = ta.lowest(low, i_slLookback)
+swingHigh = ta.highest(high, i_slLookback)
+
+slLong = i_slMode == "ATR puro" ? entryLong - localAtr * i_atrSLMult : swingLow - localAtr * i_slAtrBuffer
+slShort = i_slMode == "ATR puro" ? entryShort + localAtr * i_atrSLMult : swingHigh + localAtr * i_slAtrBuffer
+
+riskLong = entryLong - slLong
+riskShort = slShort - entryShort
+
+validRiskLong = riskLong > syminfo.mintick * i_minTicksRisk
+validRiskShort = riskShort > syminfo.mintick * i_minTicksRisk
+
+tp1Long = entryLong + riskLong * i_rrMin
+tp2Long = entryLong + riskLong * i_rrRunner
+tp1Short = entryShort - riskShort * i_rrMin
+tp2Short = entryShort - riskShort * i_rrRunner
+
+setupLongAllowed = syncLong and validRiskLong
+setupShortAllowed = syncShort and validRiskShort
+
+string centralState = "ESPERAR"
+color centralColor = colNeu
+if setupLongAllowed
+    centralState := "BUSCAR LONG"
+    centralColor := colUp
+else if setupShortAllowed
+    centralState := "BUSCAR SHORT"
+    centralColor := colDn
+else if syncLong and not validRiskLong
+    centralState := "LONG INVALIDO: riesgo pequeño"
+    centralColor := colWarn
+else if syncShort and not validRiskShort
+    centralState := "SHORT INVALIDO: riesgo pequeño"
+    centralColor := colWarn
+else
+    centralState := "ESPERAR FRACTALIDAD"
+    centralColor := colNeu
+
+fractalScore = (math.abs(wDir) + math.abs(dDir) + math.abs(eDir)) / 3.0 * 100.0
+
+// =============================================================================
+//  PLOTS BASE
+// =============================================================================
+plot(localKama, "KAMA local", color = centralColor, linewidth = 2)
+plot(localStLine, "SuperTrend local", color = localDir > 0 ? color.new(colUp, 30) : localDir < 0 ? color.new(colDn, 30) : color.new(color.gray, 50), linewidth = 1, style = plot.style_linebr)
+
+plotshape(i_showSignals and longSignal and setupLongAllowed, title = "BUSCAR LONG fractal", style = shape.triangleup, location = location.belowbar, color = colUp, size = size.large, text = "BUSCAR\nLONG")
+plotshape(i_showSignals and shortSignal and setupShortAllowed, title = "BUSCAR SHORT fractal", style = shape.triangledown, location = location.abovebar, color = colDn, size = size.large, text = "BUSCAR\nSHORT")
+plotshape(i_showSignals and lostSync, title = "Sincronía perdida", style = shape.xcross, location = location.top, color = colWarn, size = size.small, text = "SYNC\nOFF")
+
+barcolor(i_colorBars ? (syncLong ? color.new(colUp, 70) : syncShort ? color.new(colDn, 70) : na) : na, title = "Color por fractalidad")
+
+// =============================================================================
+//  DIBUJO DE NIVELES
+// =============================================================================
+var line lnEntry = na
+var line lnSL = na
+var line lnTP1 = na
+var line lnTP2 = na
+var label lbEntry = na
+var label lbSL = na
+var label lbTP1 = na
+var label lbTP2 = na
+
+f_clearLevels() =>
+    if not na(lnEntry)
+        line.delete(lnEntry)
+    if not na(lnSL)
+        line.delete(lnSL)
+    if not na(lnTP1)
+        line.delete(lnTP1)
+    if not na(lnTP2)
+        line.delete(lnTP2)
+    if not na(lbEntry)
+        label.delete(lbEntry)
+    if not na(lbSL)
+        label.delete(lbSL)
+    if not na(lbTP1)
+        label.delete(lbTP1)
+    if not na(lbTP2)
+        label.delete(lbTP2)
+
+f_drawLevels(bool isLong, float entry, float sl, float tp1, float tp2) =>
+    color sideColor = isLong ? colUp : colDn
+    int x2 = bar_index + i_projectionBars
+    line.new(bar_index, entry, x2, entry, color = color.new(sideColor, 0), width = 2)
+    line.new(bar_index, sl, x2, sl, color = color.new(colWarn, 0), width = 2)
+    line.new(bar_index, tp1, x2, tp1, color = color.new(colInfo, 0), width = 1)
+    line.new(bar_index, tp2, x2, tp2, color = color.new(sideColor, 25), width = 1)
+    label.new(x2, entry, "Entrada aprox. " + f_price(entry), style = label.style_label_left, color = color.new(sideColor, 0), textcolor = color.white, size = size.small)
+    label.new(x2, sl, "SL " + f_price(sl), style = label.style_label_left, color = color.new(colWarn, 0), textcolor = color.white, size = size.small)
+    label.new(x2, tp1, "TP1 1:" + str.tostring(i_rrMin) + " · " + f_price(tp1), style = label.style_label_left, color = color.new(colInfo, 0), textcolor = color.white, size = size.small)
+    label.new(x2, tp2, "TP2 1:" + str.tostring(i_rrRunner) + " · " + f_price(tp2), style = label.style_label_left, color = color.new(sideColor, 25), textcolor = color.white, size = size.small)
+
+if i_showLevels and longSignal and setupLongAllowed
+    if i_keepOnlyLast
+        f_clearLevels()
+    lnEntry := line.new(bar_index, entryLong, bar_index + i_projectionBars, entryLong, color = color.new(colUp, 0), width = 2)
+    lnSL := line.new(bar_index, slLong, bar_index + i_projectionBars, slLong, color = color.new(colWarn, 0), width = 2)
+    lnTP1 := line.new(bar_index, tp1Long, bar_index + i_projectionBars, tp1Long, color = color.new(colInfo, 0), width = 1)
+    lnTP2 := line.new(bar_index, tp2Long, bar_index + i_projectionBars, tp2Long, color = color.new(colUp, 25), width = 1)
+    lbEntry := label.new(bar_index + i_projectionBars, entryLong, "Entrada aprox. " + f_price(entryLong), style = label.style_label_left, color = color.new(colUp, 0), textcolor = color.white, size = size.small)
+    lbSL := label.new(bar_index + i_projectionBars, slLong, "SL " + f_price(slLong), style = label.style_label_left, color = color.new(colWarn, 0), textcolor = color.white, size = size.small)
+    lbTP1 := label.new(bar_index + i_projectionBars, tp1Long, "TP1 1:" + str.tostring(i_rrMin) + " · " + f_price(tp1Long), style = label.style_label_left, color = color.new(colInfo, 0), textcolor = color.white, size = size.small)
+    lbTP2 := label.new(bar_index + i_projectionBars, tp2Long, "TP2 1:" + str.tostring(i_rrRunner) + " · " + f_price(tp2Long), style = label.style_label_left, color = color.new(colUp, 25), textcolor = color.white, size = size.small)
+
+if i_showLevels and shortSignal and setupShortAllowed
+    if i_keepOnlyLast
+        f_clearLevels()
+    lnEntry := line.new(bar_index, entryShort, bar_index + i_projectionBars, entryShort, color = color.new(colDn, 0), width = 2)
+    lnSL := line.new(bar_index, slShort, bar_index + i_projectionBars, slShort, color = color.new(colWarn, 0), width = 2)
+    lnTP1 := line.new(bar_index, tp1Short, bar_index + i_projectionBars, tp1Short, color = color.new(colInfo, 0), width = 1)
+    lnTP2 := line.new(bar_index, tp2Short, bar_index + i_projectionBars, tp2Short, color = color.new(colDn, 25), width = 1)
+    lbEntry := label.new(bar_index + i_projectionBars, entryShort, "Entrada aprox. " + f_price(entryShort), style = label.style_label_left, color = color.new(colDn, 0), textcolor = color.white, size = size.small)
+    lbSL := label.new(bar_index + i_projectionBars, slShort, "SL " + f_price(slShort), style = label.style_label_left, color = color.new(colWarn, 0), textcolor = color.white, size = size.small)
+    lbTP1 := label.new(bar_index + i_projectionBars, tp1Short, "TP1 1:" + str.tostring(i_rrMin) + " · " + f_price(tp1Short), style = label.style_label_left, color = color.new(colInfo, 0), textcolor = color.white, size = size.small)
+    lbTP2 := label.new(bar_index + i_projectionBars, tp2Short, "TP2 1:" + str.tostring(i_rrRunner) + " · " + f_price(tp2Short), style = label.style_label_left, color = color.new(colDn, 25), textcolor = color.white, size = size.small)
+
+// =============================================================================
+//  PANEL
+// =============================================================================
+tblPos = i_tablePos == "Arriba derecha" ? position.top_right :
+         i_tablePos == "Arriba izquierda" ? position.top_left :
+         i_tablePos == "Abajo derecha" ? position.bottom_right : position.bottom_left
+
+var table tbl = table.new(tblPos, 4, 12, border_width = 1, frame_width = 1, frame_color = color.new(color.gray, 50))
+
+f_cell(int c, int r, string txt, color tc, color bg, string align) =>
+    table.cell(tbl, c, r, txt, text_color = tc, text_size = size.small, bgcolor = bg, text_halign = align == "right" ? text.align_right : align == "center" ? text.align_center : text.align_left)
+
+if i_showTable and barstate.islast
+    table.cell(tbl, 0, 0, "QRCE Fractal V2", text_color = color.white, text_size = size.normal, bgcolor = color.new(color.gray, 30), text_halign = text.align_left)
+    table.cell(tbl, 1, 0, centralState, text_color = color.white, text_size = size.normal, bgcolor = centralColor, text_halign = text.align_center)
+    table.cell(tbl, 2, 0, "Sync " + str.format("{0,number,#}", fractalScore) + "%", text_color = color.white, text_size = size.normal, bgcolor = centralColor, text_halign = text.align_center)
+    table.cell(tbl, 3, 0, "RR≥1:" + str.tostring(i_rrMin), text_color = color.white, text_size = size.normal, bgcolor = color.new(color.gray, 30), text_halign = text.align_right)
+
+    f_cell(0, 1, "Marco", color.white, color.new(color.gray, 65), "left")
+    f_cell(1, 1, "Dir", color.white, color.new(color.gray, 65), "center")
+    f_cell(2, 1, "Score", color.white, color.new(color.gray, 65), "right")
+    f_cell(3, 1, "Gate", color.white, color.new(color.gray, 65), "center")
+
+    f_cell(0, 2, "Semanal " + i_tfWeekly, color.white, colBg, "left")
+    f_cell(1, 2, f_dirText(wDir), f_dirColor(wDir), colBg, "center")
+    f_cell(2, 2, str.format("{0,number,#.#}", wScore), f_dirColor(wDir), colBg, "right")
+    f_cell(3, 2, f_yesNo(wGate), wGate ? colUp : colWarn, colBg, "center")
+
+    f_cell(0, 3, "Diario " + i_tfDaily, color.white, colBg, "left")
+    f_cell(1, 3, f_dirText(dDir), f_dirColor(dDir), colBg, "center")
+    f_cell(2, 3, str.format("{0,number,#.#}", dScore), f_dirColor(dDir), colBg, "right")
+    f_cell(3, 3, f_yesNo(dGate), dGate ? colUp : colWarn, colBg, "center")
+
+    f_cell(0, 4, "Entrada " + i_tfEntry, color.white, colBg, "left")
+    f_cell(1, 4, f_dirText(eDir), f_dirColor(eDir), colBg, "center")
+    f_cell(2, 4, str.format("{0,number,#.#}", eScore), f_dirColor(eDir), colBg, "right")
+    f_cell(3, 4, f_yesNo(eGate), eGate ? colUp : colWarn, colBg, "center")
+
+    f_cell(0, 5, "Regla central", color.white, color.new(centralColor, 70), "left")
+    f_cell(1, 5, centralState, color.white, color.new(centralColor, 70), "center")
+    f_cell(2, 5, syncLong ? "LONG" : syncShort ? "SHORT" : "OFF", color.white, color.new(centralColor, 70), "center")
+    f_cell(3, 5, syncAny ? "SYNC" : "WAIT", color.white, color.new(centralColor, 70), "center")
+
+    activeEntry = setupLongAllowed ? entryLong : setupShortAllowed ? entryShort : na
+    activeSL = setupLongAllowed ? slLong : setupShortAllowed ? slShort : na
+    activeTP1 = setupLongAllowed ? tp1Long : setupShortAllowed ? tp1Short : na
+    activeTP2 = setupLongAllowed ? tp2Long : setupShortAllowed ? tp2Short : na
+
+    f_cell(0, 6, "Entrada aprox.", color.white, colBg, "left")
+    f_cell(1, 6, f_price(activeEntry), centralColor, colBg, "right")
+    f_cell(2, 6, "SL", color.white, colBg, "center")
+    f_cell(3, 6, f_price(activeSL), colWarn, colBg, "right")
+
+    f_cell(0, 7, "TP1", color.white, colBg, "left")
+    f_cell(1, 7, f_price(activeTP1), colInfo, colBg, "right")
+    f_cell(2, 7, "TP2", color.white, colBg, "center")
+    f_cell(3, 7, f_price(activeTP2), centralColor, colBg, "right")
+
+    f_cell(0, 8, "Riesgo", color.white, colBg, "left")
+    f_cell(1, 8, setupLongAllowed ? f_price(riskLong) : setupShortAllowed ? f_price(riskShort) : "n/a", color.white, colBg, "right")
+    f_cell(2, 8, "Modo SL", color.white, colBg, "center")
+    f_cell(3, 8, i_slMode, color.white, colBg, "right")
+
+    f_cell(0, 9, "Local ADX", color.white, colBg, "left")
+    f_cell(1, 9, str.format("{0,number,#.#}", localAdx), localAdx >= i_adxThresh ? colUp : colNeu, colBg, "right")
+    f_cell(2, 9, "Local KER", color.white, colBg, "center")
+    f_cell(3, 9, str.format("{0,number,#.##}", localKer), localKer >= i_kerGate ? colUp : colNeu, colBg, "right")
+
+    f_cell(0, 10, "Local TQI", color.white, colBg, "left")
+    f_cell(1, 10, str.format("{0,number,#.##}", localTqi), localTqi >= i_tqiExhaust ? colUp : colNeu, colBg, "right")
+    f_cell(2, 10, "RSI", color.white, colBg, "center")
+    f_cell(3, 10, str.format("{0,number,#.#}", localRsi), localRsi > i_rsiMid ? colUp : colDn, colBg, "right")
+
+    f_cell(0, 11, "Bloqueo", color.white, colBg, "left")
+    blockTxt = syncAny ? "Sin bloqueo" : "W/D/1H no alineados"
+    if syncLong and not validRiskLong
+        blockTxt := "Riesgo LONG inválido"
+    if syncShort and not validRiskShort
+        blockTxt := "Riesgo SHORT inválido"
+    f_cell(1, 11, blockTxt, syncAny ? colUp : colWarn, colBg, "left")
+    f_cell(2, 11, "Modo", color.white, colBg, "center")
+    f_cell(3, 11, i_syncMode, color.white, colBg, "right")
+
+// =============================================================================
+//  EVENTOS ESTRUCTURADOS / ALERTAS
+// =============================================================================
+f_eventJson(string ev, string side, float entry, float sl, float tp1, float tp2) =>
+    "{" +
+    "\"source\":\"QRCE_FRACTAL_SWING_V2\"," +
+    "\"event\":\"" + ev + "\"," +
+    "\"ticker\":\"" + syminfo.ticker + "\"," +
+    "\"timeframe_chart\":\"" + timeframe.period + "\"," +
+    "\"tf_weekly\":\"" + i_tfWeekly + "\"," +
+    "\"tf_daily\":\"" + i_tfDaily + "\"," +
+    "\"tf_entry\":\"" + i_tfEntry + "\"," +
+    "\"side\":\"" + side + "\"," +
+    "\"entry\":\"" + f_price(entry) + "\"," +
+    "\"sl\":\"" + f_price(sl) + "\"," +
+    "\"tp1\":\"" + f_price(tp1) + "\"," +
+    "\"tp2\":\"" + f_price(tp2) + "\"," +
+    "\"rr_min\":\"" + str.tostring(i_rrMin) + "\"," +
+    "\"weekly_dir\":\"" + f_dirText(wDir) + "\"," +
+    "\"daily_dir\":\"" + f_dirText(dDir) + "\"," +
+    "\"entry_dir\":\"" + f_dirText(eDir) + "\"," +
+    "\"weekly_score\":\"" + str.format("{0,number,#.#}", wScore) + "\"," +
+    "\"daily_score\":\"" + str.format("{0,number,#.#}", dScore) + "\"," +
+    "\"entry_score\":\"" + str.format("{0,number,#.#}", eScore) + "\"" +
+    "}"
+
+if i_enableJsonAlerts and i_alertOnSync and longSignal and setupLongAllowed
+    alert(f_eventJson("FRACTAL_SYNC_TRADE_READY", "LONG", entryLong, slLong, tp1Long, tp2Long), alert.freq_once_per_bar_close)
+
+if i_enableJsonAlerts and i_alertOnSync and shortSignal and setupShortAllowed
+    alert(f_eventJson("FRACTAL_SYNC_TRADE_READY", "SHORT", entryShort, slShort, tp1Short, tp2Short), alert.freq_once_per_bar_close)
+
+if i_enableJsonAlerts and i_alertOnLostSync and lostSync
+    alert(f_eventJson("FRACTAL_SYNC_LOST", "NONE", na, na, na, na), alert.freq_once_per_bar_close)
+
+alertcondition(longSignal and setupLongAllowed, title = "QRCE_FRACTAL_LONG_READY", message = "QRCE Fractal Swing V2: fractalidad W/D/1H sincronizada para buscar LONG. Revisar entrada, SL y TP en panel.")
+alertcondition(shortSignal and setupShortAllowed, title = "QRCE_FRACTAL_SHORT_READY", message = "QRCE Fractal Swing V2: fractalidad W/D/1H sincronizada para buscar SHORT. Revisar entrada, SL y TP en panel.")
+alertcondition(lostSync, title = "QRCE_FRACTAL_SYNC_LOST", message = "QRCE Fractal Swing V2: sincronía W/D/1H perdida. Dejar de buscar entrada nueva.")
+
+// =============================================================================
+//  NOTAS OPERATIVAS
+// =============================================================================
+//
+//  1. Este indicador NO abre operaciones. Filtra contexto y prepara niveles.
+//  2. La señal "BUSCAR" no significa entrar a mercado sin validar vela, liquidez,
+//     zona y coste de financiación/spread.
+//  3. Si el panel dice "ESPERAR FRACTALIDAD", no hay sincronía W/D/1H.
+//  4. TP1 siempre se calcula con R:R mínimo 1:2 por defecto.
+//  5. Para swing en cripto, úsalo preferiblemente mirando el gráfico en 1H.
+//  6. Si quieres menos señales, usa Modo de sincronía = "Fuerte".
+//  7. Si quieres señales más tempranas, usa "Débil aceptada", pero aumenta ruido.
+//  8. Para alertas JSON dinámicas, crea la alerta en TradingView con:
+//     "Any alert() function call".
+// =============================================================================
