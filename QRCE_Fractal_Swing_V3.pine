@@ -683,8 +683,8 @@ if i_enableJsonAlerts and i_alertOnSync and shortSignal and setupShortAllowed
 if i_enableJsonAlerts and i_alertOnLostSync and lostSync
     alert(f_eventJson("FRACTAL_SYNC_LOST", "NONE", na, na, na, na), alert.freq_once_per_bar_close)
 
-alertcondition(longSignal and setupLongAllowed, title = "QRCE_FRACTAL_LONG_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio sobre EMA50 + RSI operable. Buscar LONG. Revisar entrada, SL y TP en panel.")
-alertcondition(shortSignal and setupShortAllowed, title = "QRCE_FRACTAL_SHORT_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio bajo EMA50 + RSI operable. Buscar SHORT. Revisar entrada, SL y TP en panel.")
+alertcondition(longSignal and setupLongAllowed, title = "QRCE_FRACTAL_LONG_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio sobre EMA50 + RSI operable. LONG READY: gatillo confirmado. Revisar entrada, SL y TP en panel.")
+alertcondition(shortSignal and setupShortAllowed, title = "QRCE_FRACTAL_SHORT_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio bajo EMA50 + RSI operable. SHORT READY: gatillo confirmado. Revisar entrada, SL y TP en panel.")
 alertcondition(lostSync, title = "QRCE_FRACTAL_SYNC_LOST", message = "QRCE Fractal Swing V3: sincronía D/1H/15m perdida. Dejar de buscar entrada nueva.")
 
 // =============================================================================
