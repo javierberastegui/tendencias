@@ -2,6 +2,35 @@
 
 Indicador compuesto de tendencia para TradingView (Pine Script v6).
 
+## QRCE Fractal Swing V3 — `QRCE_Fractal_Swing_V3.pine`
+
+Evolución intradía de la V2 con fractalidad **Diario / 1H / 15 minutos**
+(el marco de entrada pasa de 5m a **15m**), gatillo por **EMA50** como
+soporte/resistencia dinámica y filtro **RSI de sobrecompra/sobreventa**
+(70/30, el clásico respetado en forex).
+
+### Flujo de decisión (respetando los fractales)
+
+1. **Diario** — dirección de fondo (contexto mayor).
+2. **1H** — confirmación de que la tendencia operativa acompaña.
+3. **15m** — sincronía final y gatillo fino. *Gráfico recomendado: 15m.*
+4. **EMA50** — por encima solo LONGS (soporte dinámico); por debajo solo
+   SHORTS (resistencia dinámica). El gatillo por defecto es el *pullback*
+   a la EMA50 con reacción a favor de la tendencia.
+5. **RSI extremo** — con RSI ≥ 70 no se buscan longs nuevos (no comprar
+   techos); con RSI ≤ 30 no se buscan shorts nuevos (no vender suelos).
+
+### Estados del panel
+
+`BUSCAR LONG/SHORT` cuando todo alinea; `EN PAUSA` cuando la fractalidad
+está sincronizada pero la EMA50 o el RSI piden esperar mejor precio;
+`ESPERAR FRACTALIDAD` cuando D/1H/15m no están alineados. El panel muestra
+el lado de la EMA50, el estado del RSI y el motivo exacto de bloqueo.
+
+Sin repintado (cierres confirmados vía `request.security(..., serie[1])`),
+alertas al cierre de vela y alertas JSON para webhook. La V2 (W/D/1H, swing)
+se mantiene intacta en `QRCE_Fractal_Swing_V2.pine`.
+
 ## QRCE-Lite V1 — `QRCE_Lite_V1.pine`
 
 Primera versión funcional, robusta y **compilable** del *Quantum Regime Confluence
