@@ -367,11 +367,19 @@ emaShortOk = not i_useEmaFilter or (emaShortOkLocal and emaShortOkHtf)
 
 // Pullback a la EMA50: la vela toca la media (soporte/resistencia dinámica)
 // y cierra a favor de la tendencia, o el cierre recupera la media.
-pullbackEmaLong  = syncLong and barstate.isconfirmed and close > ema50 and (ta.crossover(close, ema50) or (low <= ema50 and close > open))
-pullbackEmaShort = syncShort and barstate.isconfirmed and close < ema50 and (ta.crossunder(close, ema50) or (high >= ema50 and close < open))
+// Los cruces se calculan primero como variables globales (se evalúan en
+// cada barra) para evitar el warning de ta.crossover/crossunder dentro de
+// una expresión condicional.
+emaCrossUp    = ta.crossover(close, ema50)
+emaCrossDown  = ta.crossunder(close, ema50)
+kamaCrossUp   = ta.crossover(close, localKama)
+kamaCrossDown = ta.crossunder(close, localKama)
 
-pullbackKamaLong = syncLong and barstate.isconfirmed and close > localKama and close > localStLine and (ta.crossover(close, localKama) or (low <= localKama and close > open))
-pullbackKamaShort = syncShort and barstate.isconfirmed and close < localKama and close < localStLine and (ta.crossunder(close, localKama) or (high >= localKama and close < open))
+pullbackEmaLong  = syncLong and barstate.isconfirmed and close > ema50 and (emaCrossUp or (low <= ema50 and close > open))
+pullbackEmaShort = syncShort and barstate.isconfirmed and close < ema50 and (emaCrossDown or (high >= ema50 and close < open))
+
+pullbackKamaLong = syncLong and barstate.isconfirmed and close > localKama and close > localStLine and (kamaCrossUp or (low <= localKama and close > open))
+pullbackKamaShort = syncShort and barstate.isconfirmed and close < localKama and close < localStLine and (kamaCrossDown or (high >= localKama and close < open))
 
 // =============================================================================
 //  FILTRO RSI EXTREMO (SOBRECOMPRA / SOBREVENTA — FOREX 70/30)
@@ -642,37 +650,38 @@ f_eventJson(string ev, string side, float entry, float sl, float tp1, float tp2)
     bool sideRiskOk    = side == "LONG" ? validRiskLong : side == "SHORT" ? validRiskShort : false
     bool sideEmaOk     = side == "LONG" ? emaLongOk : side == "SHORT" ? emaShortOk : false
     bool sideRsiOk     = side == "LONG" ? rsiLongOk : side == "SHORT" ? rsiShortOk : false
-    "{" +
-    "\"source\":\"QRCE_FRACTAL_SWING_V3\"," +
-    "\"event\":\"" + ev + "\"," +
-    "\"ticker\":\"" + syminfo.ticker + "\"," +
-    "\"timeframe_chart\":\"" + timeframe.period + "\"," +
-    "\"tf_context\":\"" + i_tfContext + "\"," +
-    "\"tf_confirm\":\"" + i_tfConfirm + "\"," +
-    "\"tf_entry\":\"" + i_tfEntry + "\"," +
-    "\"side\":\"" + side + "\"," +
-    "\"central_state\":\"" + centralState + "\"," +
-    "\"block_reason\":\"" + blockReason + "\"," +
-    "\"signal_triggered\":" + f_jbool(sideTriggered) + "," +
-    "\"setup_allowed\":" + f_jbool(sideAllowed) + "," +
-    "\"risk_valid\":" + f_jbool(sideRiskOk) + "," +
-    "\"ema_filter_ok\":" + f_jbool(sideEmaOk) + "," +
-    "\"rsi_filter_ok\":" + f_jbool(sideRsiOk) + "," +
-    "\"entry\":" + f_jnum(entry) + "," +
-    "\"sl\":" + f_jnum(sl) + "," +
-    "\"tp1\":" + f_jnum(tp1) + "," +
-    "\"tp2\":" + f_jnum(tp2) + "," +
-    "\"rr_min\":" + f_jnum(i_rrMin) + "," +
-    "\"ema50\":" + f_jnum(ema50) + "," +
-    "\"ema50_side\":\"" + (close > ema50 ? "ENCIMA" : "DEBAJO") + "\"," +
-    "\"rsi\":" + f_jnum(localRsi) + "," +
-    "\"context_dir\":\"" + f_dirText(ctxDir) + "\"," +
-    "\"confirm_dir\":\"" + f_dirText(midDir) + "\"," +
-    "\"entry_dir\":\"" + f_dirText(entDir) + "\"," +
-    "\"context_score\":" + f_jnum(ctxScore) + "," +
-    "\"confirm_score\":" + f_jnum(midScore) + "," +
-    "\"entry_score\":" + f_jnum(entScore) +
-    "}"
+    string j = "{"
+    j := j + "\"source\":\"QRCE_FRACTAL_SWING_V3\","
+    j := j + "\"event\":\"" + ev + "\","
+    j := j + "\"ticker\":\"" + syminfo.ticker + "\","
+    j := j + "\"timeframe_chart\":\"" + timeframe.period + "\","
+    j := j + "\"tf_context\":\"" + i_tfContext + "\","
+    j := j + "\"tf_confirm\":\"" + i_tfConfirm + "\","
+    j := j + "\"tf_entry\":\"" + i_tfEntry + "\","
+    j := j + "\"side\":\"" + side + "\","
+    j := j + "\"central_state\":\"" + centralState + "\","
+    j := j + "\"block_reason\":\"" + blockReason + "\","
+    j := j + "\"signal_triggered\":" + f_jbool(sideTriggered) + ","
+    j := j + "\"setup_allowed\":" + f_jbool(sideAllowed) + ","
+    j := j + "\"risk_valid\":" + f_jbool(sideRiskOk) + ","
+    j := j + "\"ema_filter_ok\":" + f_jbool(sideEmaOk) + ","
+    j := j + "\"rsi_filter_ok\":" + f_jbool(sideRsiOk) + ","
+    j := j + "\"entry\":" + f_jnum(entry) + ","
+    j := j + "\"sl\":" + f_jnum(sl) + ","
+    j := j + "\"tp1\":" + f_jnum(tp1) + ","
+    j := j + "\"tp2\":" + f_jnum(tp2) + ","
+    j := j + "\"rr_min\":" + f_jnum(i_rrMin) + ","
+    j := j + "\"ema50\":" + f_jnum(ema50) + ","
+    j := j + "\"ema50_side\":\"" + (close > ema50 ? "ENCIMA" : "DEBAJO") + "\","
+    j := j + "\"rsi\":" + f_jnum(localRsi) + ","
+    j := j + "\"context_dir\":\"" + f_dirText(ctxDir) + "\","
+    j := j + "\"confirm_dir\":\"" + f_dirText(midDir) + "\","
+    j := j + "\"entry_dir\":\"" + f_dirText(entDir) + "\","
+    j := j + "\"context_score\":" + f_jnum(ctxScore) + ","
+    j := j + "\"confirm_score\":" + f_jnum(midScore) + ","
+    j := j + "\"entry_score\":" + f_jnum(entScore)
+    j := j + "}"
+    j
 
 if i_enableJsonAlerts and i_alertOnSync and longSignal and setupLongAllowed
     alert(f_eventJson("FRACTAL_SYNC_TRADE_READY", "LONG", entryLong, slLong, tp1Long, tp2Long), alert.freq_once_per_bar_close)
@@ -683,8 +692,8 @@ if i_enableJsonAlerts and i_alertOnSync and shortSignal and setupShortAllowed
 if i_enableJsonAlerts and i_alertOnLostSync and lostSync
     alert(f_eventJson("FRACTAL_SYNC_LOST", "NONE", na, na, na, na), alert.freq_once_per_bar_close)
 
-alertcondition(longSignal and setupLongAllowed, title = "QRCE_FRACTAL_LONG_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio sobre EMA50 + RSI operable. Buscar LONG. Revisar entrada, SL y TP en panel.")
-alertcondition(shortSignal and setupShortAllowed, title = "QRCE_FRACTAL_SHORT_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio bajo EMA50 + RSI operable. Buscar SHORT. Revisar entrada, SL y TP en panel.")
+alertcondition(longSignal and setupLongAllowed, title = "QRCE_FRACTAL_LONG_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio sobre EMA50 + RSI operable. LONG READY: gatillo confirmado. Revisar entrada, SL y TP en panel.")
+alertcondition(shortSignal and setupShortAllowed, title = "QRCE_FRACTAL_SHORT_READY", message = "QRCE Fractal Swing V3: fractalidad D/1H/15m sincronizada + precio bajo EMA50 + RSI operable. SHORT READY: gatillo confirmado. Revisar entrada, SL y TP en panel.")
 alertcondition(lostSync, title = "QRCE_FRACTAL_SYNC_LOST", message = "QRCE Fractal Swing V3: sincronía D/1H/15m perdida. Dejar de buscar entrada nueva.")
 
 // =============================================================================
