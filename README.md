@@ -22,10 +22,15 @@ soporte/resistencia dinámica y filtro **RSI de sobrecompra/sobreventa**
 
 ### Estados del panel
 
-`BUSCAR LONG/SHORT` cuando todo alinea; `EN PAUSA` cuando la fractalidad
-está sincronizada pero la EMA50 o el RSI piden esperar mejor precio;
-`ESPERAR FRACTALIDAD` cuando D/1H/15m no están alineados. El panel muestra
-el lado de la EMA50, el estado del RSI y el motivo exacto de bloqueo.
+`SESGO LONG/SHORT` cuando el contexto es favorable pero el gatillo aún no
+se ha disparado (esperar ejecución); `LONG/SHORT READY` solo cuando el
+gatillo real se confirma al cierre de vela; `EN PAUSA` cuando la
+fractalidad está sincronizada pero la EMA50 o el RSI piden esperar mejor
+precio; `ESPERAR FRACTALIDAD` cuando D/1H/15m no están alineados. El panel
+muestra el lado de la EMA50, el estado del RSI y el motivo exacto de
+bloqueo. Las alertas JSON incluyen `central_state`, `block_reason` y flags
+booleanos (`signal_triggered`, `setup_allowed`, `risk_valid`,
+`ema_filter_ok`, `rsi_filter_ok`) con números reales y `null` para n/a.
 
 Sin repintado (cierres confirmados vía `request.security(..., serie[1])`),
 alertas al cierre de vela y alertas JSON para webhook. La V2 (W/D/1H, swing)
