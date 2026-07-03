@@ -170,6 +170,13 @@ f_yesNo(bool b) =>
 f_price(float p) =>
     na(p) ? "n/a" : str.tostring(p, format.mintick)
 
+// Helpers JSON: números sin comillas y null para na, booleanos reales.
+f_jnum(float p) =>
+    na(p) ? "null" : str.tostring(p)
+
+f_jbool(bool b) =>
+    b ? "true" : "false"
+
 f_engine() =>
     chg = math.abs(close - close[i_kerLen])
     path = math.sum(math.abs(close - close[1]), i_kerLen)
@@ -414,32 +421,51 @@ tp2Short = entryShort - riskShort * i_rrRunner
 setupLongAllowed = syncLong and validRiskLong and emaLongOk and rsiLongOk
 setupShortAllowed = syncShort and validRiskShort and emaShortOk and rsiShortOk
 
+// Estado central: separa SESGO (contexto favorable, esperar ejecución)
+// de READY (gatillo real disparado en esta vela).
 string centralState = "ESPERAR"
 color centralColor = colNeu
-if setupLongAllowed
-    centralState := "BUSCAR LONG"
+string blockReason = "D/1H/15m no alineados"
+if setupLongAllowed and longSignal
+    centralState := "LONG READY"
     centralColor := colUp
-else if setupShortAllowed
-    centralState := "BUSCAR SHORT"
+    blockReason := "Gatillo LONG activo"
+else if setupShortAllowed and shortSignal
+    centralState := "SHORT READY"
     centralColor := colDn
+    blockReason := "Gatillo SHORT activo"
+else if setupLongAllowed
+    centralState := "SESGO LONG"
+    centralColor := colUpW
+    blockReason := "Esperando gatillo LONG"
+else if setupShortAllowed
+    centralState := "SESGO SHORT"
+    centralColor := colDnW
+    blockReason := "Esperando gatillo SHORT"
 else if syncLong and not emaLongOk
     centralState := "LONG EN PAUSA: bajo EMA50"
     centralColor := colWarn
+    blockReason := "Precio bajo EMA50"
 else if syncShort and not emaShortOk
     centralState := "SHORT EN PAUSA: sobre EMA50"
     centralColor := colWarn
+    blockReason := "Precio sobre EMA50"
 else if syncLong and not rsiLongOk
     centralState := "LONG EN PAUSA: RSI sobrecompra"
     centralColor := colWarn
+    blockReason := "RSI en sobrecompra"
 else if syncShort and not rsiShortOk
     centralState := "SHORT EN PAUSA: RSI sobreventa"
     centralColor := colWarn
+    blockReason := "RSI en sobreventa"
 else if syncLong and not validRiskLong
     centralState := "LONG INVALIDO: riesgo pequeño"
     centralColor := colWarn
+    blockReason := "Riesgo LONG inválido"
 else if syncShort and not validRiskShort
     centralState := "SHORT INVALIDO: riesgo pequeño"
     centralColor := colWarn
+    blockReason := "Riesgo SHORT inválido"
 else
     centralState := "ESPERAR FRACTALIDAD"
     centralColor := colNeu
@@ -453,8 +479,8 @@ plot(i_showEma ? ema50 : na, "EMA50 (S/R dinámica)", color = colEma, linewidth 
 plot(localKama, "KAMA local", color = centralColor, linewidth = 2)
 plot(localStLine, "SuperTrend local", color = localDir > 0 ? color.new(colUp, 30) : localDir < 0 ? color.new(colDn, 30) : color.new(color.gray, 50), linewidth = 1, style = plot.style_linebr)
 
-plotshape(i_showSignals and longSignal and setupLongAllowed, title = "BUSCAR LONG fractal", style = shape.triangleup, location = location.belowbar, color = colUp, size = size.large, text = "BUSCAR\nLONG")
-plotshape(i_showSignals and shortSignal and setupShortAllowed, title = "BUSCAR SHORT fractal", style = shape.triangledown, location = location.abovebar, color = colDn, size = size.large, text = "BUSCAR\nSHORT")
+plotshape(i_showSignals and longSignal and setupLongAllowed, title = "LONG READY fractal", style = shape.triangleup, location = location.belowbar, color = colUp, size = size.large, text = "LONG\nREADY")
+plotshape(i_showSignals and shortSignal and setupShortAllowed, title = "SHORT READY fractal", style = shape.triangledown, location = location.abovebar, color = colDn, size = size.large, text = "SHORT\nREADY")
 plotshape(i_showSignals and lostSync, title = "Sincronía perdida", style = shape.xcross, location = location.top, color = colWarn, size = size.small, text = "SYNC\nOFF")
 
 bgcolor(i_showRsiExt and i_useRsiObOs and rsiOverbought ? color.new(colDn, 90) : i_showRsiExt and i_useRsiObOs and rsiOversold ? color.new(colUp, 90) : na, title = "Zona RSI extremo")
@@ -602,21 +628,8 @@ if i_showTable and barstate.islast
     f_cell(2, 12, "Gatillo", color.white, colBg, "center")
     f_cell(3, 12, i_triggerMode == "Sincronía + pullback EMA50" ? "EMA50" : i_triggerMode == "Sincronía + pullback KAMA" ? "KAMA" : "SYNC", colEma, colBg, "right")
 
-    f_cell(0, 13, "Bloqueo", color.white, colBg, "left")
-    blockTxt = syncAny ? "Sin bloqueo" : "D/1H/15m no alineados"
-    if syncLong and not emaLongOk
-        blockTxt := "Precio bajo EMA50"
-    if syncShort and not emaShortOk
-        blockTxt := "Precio sobre EMA50"
-    if syncLong and not rsiLongOk
-        blockTxt := "RSI en sobrecompra"
-    if syncShort and not rsiShortOk
-        blockTxt := "RSI en sobreventa"
-    if syncLong and not validRiskLong
-        blockTxt := "Riesgo LONG inválido"
-    if syncShort and not validRiskShort
-        blockTxt := "Riesgo SHORT inválido"
-    f_cell(1, 13, blockTxt, setupLongAllowed or setupShortAllowed ? colUp : colWarn, colBg, "left")
+    f_cell(0, 13, "Estado", color.white, colBg, "left")
+    f_cell(1, 13, blockReason, setupLongAllowed or setupShortAllowed ? colUp : colWarn, colBg, "left")
     f_cell(2, 13, "Modo", color.white, colBg, "center")
     f_cell(3, 13, i_syncMode, color.white, colBg, "right")
 
@@ -624,6 +637,11 @@ if i_showTable and barstate.islast
 //  EVENTOS ESTRUCTURADOS / ALERTAS
 // =============================================================================
 f_eventJson(string ev, string side, float entry, float sl, float tp1, float tp2) =>
+    bool sideTriggered = side == "LONG" ? longSignal : side == "SHORT" ? shortSignal : false
+    bool sideAllowed   = side == "LONG" ? setupLongAllowed : side == "SHORT" ? setupShortAllowed : false
+    bool sideRiskOk    = side == "LONG" ? validRiskLong : side == "SHORT" ? validRiskShort : false
+    bool sideEmaOk     = side == "LONG" ? emaLongOk : side == "SHORT" ? emaShortOk : false
+    bool sideRsiOk     = side == "LONG" ? rsiLongOk : side == "SHORT" ? rsiShortOk : false
     "{" +
     "\"source\":\"QRCE_FRACTAL_SWING_V3\"," +
     "\"event\":\"" + ev + "\"," +
@@ -633,20 +651,27 @@ f_eventJson(string ev, string side, float entry, float sl, float tp1, float tp2)
     "\"tf_confirm\":\"" + i_tfConfirm + "\"," +
     "\"tf_entry\":\"" + i_tfEntry + "\"," +
     "\"side\":\"" + side + "\"," +
-    "\"entry\":\"" + f_price(entry) + "\"," +
-    "\"sl\":\"" + f_price(sl) + "\"," +
-    "\"tp1\":\"" + f_price(tp1) + "\"," +
-    "\"tp2\":\"" + f_price(tp2) + "\"," +
-    "\"rr_min\":\"" + str.tostring(i_rrMin) + "\"," +
-    "\"ema50\":\"" + f_price(ema50) + "\"," +
+    "\"central_state\":\"" + centralState + "\"," +
+    "\"block_reason\":\"" + blockReason + "\"," +
+    "\"signal_triggered\":" + f_jbool(sideTriggered) + "," +
+    "\"setup_allowed\":" + f_jbool(sideAllowed) + "," +
+    "\"risk_valid\":" + f_jbool(sideRiskOk) + "," +
+    "\"ema_filter_ok\":" + f_jbool(sideEmaOk) + "," +
+    "\"rsi_filter_ok\":" + f_jbool(sideRsiOk) + "," +
+    "\"entry\":" + f_jnum(entry) + "," +
+    "\"sl\":" + f_jnum(sl) + "," +
+    "\"tp1\":" + f_jnum(tp1) + "," +
+    "\"tp2\":" + f_jnum(tp2) + "," +
+    "\"rr_min\":" + f_jnum(i_rrMin) + "," +
+    "\"ema50\":" + f_jnum(ema50) + "," +
     "\"ema50_side\":\"" + (close > ema50 ? "ENCIMA" : "DEBAJO") + "\"," +
-    "\"rsi\":\"" + str.format("{0,number,#.#}", localRsi) + "\"," +
+    "\"rsi\":" + f_jnum(localRsi) + "," +
     "\"context_dir\":\"" + f_dirText(ctxDir) + "\"," +
     "\"confirm_dir\":\"" + f_dirText(midDir) + "\"," +
     "\"entry_dir\":\"" + f_dirText(entDir) + "\"," +
-    "\"context_score\":\"" + str.format("{0,number,#.#}", ctxScore) + "\"," +
-    "\"confirm_score\":\"" + str.format("{0,number,#.#}", midScore) + "\"," +
-    "\"entry_score\":\"" + str.format("{0,number,#.#}", entScore) + "\"" +
+    "\"context_score\":" + f_jnum(ctxScore) + "," +
+    "\"confirm_score\":" + f_jnum(midScore) + "," +
+    "\"entry_score\":" + f_jnum(entScore) +
     "}"
 
 if i_enableJsonAlerts and i_alertOnSync and longSignal and setupLongAllowed
@@ -678,9 +703,13 @@ alertcondition(lostSync, title = "QRCE_FRACTAL_SYNC_LOST", message = "QRCE Fract
 //         El pullback a la EMA50 con reacción a favor es la entrada.
 //      e) RSI extremo: con sobrecompra (≥70) no se compran techos; con
 //         sobreventa (≤30) no se venden suelos. Regla clásica de forex.
-//  4.  Si el panel dice "EN PAUSA", la tendencia está sincronizada pero el
-//      gatillo (EMA50 o RSI) pide esperar mejor precio. No es señal fallida:
-//      es paciencia.
+//  4.  Estados del panel — SESGO no es entrada:
+//      · "SESGO LONG/SHORT": contexto favorable (fractalidad + EMA50 + RSI
+//        + riesgo válidos) pero el gatillo AÚN NO se ha disparado. Esperar.
+//      · "LONG/SHORT READY": el gatillo real (pullback EMA50/KAMA o inicio
+//        de sincronía) se ha confirmado al cierre de ESTA vela.
+//      · "EN PAUSA": tendencia sincronizada pero EMA50 o RSI piden esperar
+//        mejor precio. No es señal fallida: es paciencia.
 //  5.  TP1 siempre se calcula con R:R mínimo 1:2 por defecto.
 //  6.  Si quieres menos señales: Modo "Fuerte" + "Exigir lado EMA50 también
 //      en 1H" activado.
